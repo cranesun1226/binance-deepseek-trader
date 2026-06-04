@@ -7,7 +7,7 @@ from src.ai import deepseek_trader
 class DeepSeekTraderTests(unittest.TestCase):
     def test_direction_model_uses_current_deepseek_v4_flash_id(self):
         self.assertEqual(deepseek_trader.DEEPSEEK_DIRECTION_MODEL, "deepseek-v4-flash")
-        self.assertEqual(deepseek_trader.DEEPSEEK_DEFAULT_REASONING_EFFORT, "high")
+        self.assertEqual(deepseek_trader.DEEPSEEK_DEFAULT_REASONING_EFFORT, "max")
         self.assertEqual(deepseek_trader.DEEPSEEK_MAX_REASONING_EFFORT, "max")
         self.assertEqual(deepseek_trader.DEEPSEEK_DEFAULT_TIMEOUT_SECONDS, 300.0)
 
@@ -78,6 +78,27 @@ class DeepSeekTraderTests(unittest.TestCase):
 
         self.assertIsNotNone(result)
         self.assertEqual(result.decision.decision, "SHORT")
+        payload = mocked_post.call_args.kwargs["json"]
+        self.assertEqual(payload["reasoning_effort"], "max")
+
+    def test_default_reasoning_effort_uses_max(self):
+        response = Mock()
+        response.status_code = 200
+        response.json.return_value = {
+            "choices": [{"message": {"content": '{"decision":"SHORT"}'}}],
+            "usage": {},
+        }
+
+        with patch("src.ai.deepseek_trader.get_deepseek_api_key", return_value="key"), patch(
+            "src.ai.deepseek_trader.requests.post", return_value=response
+        ) as mocked_post:
+            result = deepseek_trader._call_deepseek_structured_decision(
+                prompt="prompt",
+                reasoning_effort="",
+                response_model=deepseek_trader.TradeDirectionDecision,
+            )
+
+        self.assertIsNotNone(result)
         payload = mocked_post.call_args.kwargs["json"]
         self.assertEqual(payload["reasoning_effort"], "max")
 

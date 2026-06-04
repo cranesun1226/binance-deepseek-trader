@@ -45,20 +45,23 @@ logger = get_logger("deepseek_trader")
 
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 DEEPSEEK_GENERATE_MAX_RETRIES = 3
-DEEPSEEK_DIRECTION_MODEL = "deepseek-v4-flash"
-DEEPSEEK_DEFAULT_REASONING_EFFORT = "high"
+DEEPSEEK_FLASH_MODEL = "deepseek-v4-flash"
+DEEPSEEK_PRO_MODEL = "deepseek-v4-pro"
+DEEPSEEK_DIRECTION_MODEL = DEEPSEEK_FLASH_MODEL
+DEEPSEEK_HIGH_REASONING_EFFORT = "high"
 DEEPSEEK_MAX_REASONING_EFFORT = "max"
+DEEPSEEK_DEFAULT_REASONING_EFFORT = DEEPSEEK_MAX_REASONING_EFFORT
 DEEPSEEK_DEFAULT_TIMEOUT_SECONDS = 300.0
 DEEPSEEK_CONNECT_TIMEOUT_SECONDS = 10.0
 _ONE_MILLION = 1_000_000
 
 _DEEPSEEK_MODEL_PRICING_USD_PER_MILLION: dict[str, dict[str, float]] = {
-    DEEPSEEK_DIRECTION_MODEL: {
+    DEEPSEEK_FLASH_MODEL: {
         "input_cache_hit": 0.0028,
         "input_cache_miss": 0.14,
         "output": 0.28,
     },
-    "deepseek-v4-pro": {
+    DEEPSEEK_PRO_MODEL: {
         "input_cache_hit": 0.003625,
         "input_cache_miss": 0.435,
         "output": 0.87,
@@ -324,7 +327,9 @@ def _normalize_reasoning_effort(value: Any) -> str:
     normalized = str(value or DEEPSEEK_DEFAULT_REASONING_EFFORT).strip().lower()
     if normalized in {"max", "xhigh"}:
         return DEEPSEEK_MAX_REASONING_EFFORT
-    if normalized in {"", "none", "minimal", "low", "medium", "high"}:
+    if normalized in {"low", "medium", "high"}:
+        return DEEPSEEK_HIGH_REASONING_EFFORT
+    if normalized in {"", "none", "minimal"}:
         return DEEPSEEK_DEFAULT_REASONING_EFFORT
     logger.warning(
         "Unsupported deepseek_reasoning_effort=%s; using %s",

@@ -14,7 +14,7 @@ ai_prompt_candle_count: 100
 
 # DeepSeek V4 Flash via https://api.deepseek.com/chat/completions
 deepseek_model: deepseek-v4-flash
-deepseek_reasoning_effort: high
+deepseek_reasoning_effort: max
 deepseek_max_tokens: 8192
 deepseek_timeout_seconds: 300.0
 

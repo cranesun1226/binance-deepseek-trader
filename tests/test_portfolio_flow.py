@@ -17,7 +17,7 @@ def _config():
         "ai_prompt_timeframe": "1h",
         "ai_prompt_candle_count": 100,
         "deepseek_model": "deepseek-v4-flash",
-        "deepseek_reasoning_effort": "high",
+        "deepseek_reasoning_effort": "max",
         "deepseek_max_tokens": 8192,
         "deepseek_timeout_seconds": 300.0,
         "passive_symbols": ["CLUSDT", "XAUUSDT", "QQQUSDT", "BTCUSDT"],

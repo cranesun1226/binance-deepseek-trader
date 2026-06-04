@@ -20,7 +20,7 @@ CONFIG_PATH = os.path.join(ROOT_DIR, "setting.yaml")
 
 # Runtime defaults live here so optional keys can be omitted from setting.yaml.
 DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash"
-DEFAULT_DEEPSEEK_REASONING_EFFORT = "high"
+DEFAULT_DEEPSEEK_REASONING_EFFORT = "max"
 DEFAULT_DEEPSEEK_MAX_TOKENS = 8192
 DEFAULT_DEEPSEEK_TIMEOUT_SECONDS = 300.0
 DEFAULT_AI_PROMPT_TIMEFRAME = "1h"

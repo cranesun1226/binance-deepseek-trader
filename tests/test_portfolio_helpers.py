@@ -30,6 +30,7 @@ class PortfolioHelperTests(unittest.TestCase):
         self.assertEqual(portfolio_strategy._normalize_reasoning_effort("xhigh"), "max")
         self.assertEqual(portfolio_strategy._normalize_reasoning_effort("max"), "max")
         self.assertEqual(portfolio_strategy._normalize_reasoning_effort("medium"), "high")
+        self.assertEqual(portfolio_strategy._normalize_reasoning_effort(""), "max")
 
     def test_target_notional_uses_capital_usage_ratio_and_leverage(self):
         slot = portfolio_strategy.PortfolioSlot(

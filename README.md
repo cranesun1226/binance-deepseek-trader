@@ -2,7 +2,7 @@
 
 DeepSeek-powered six-slot Binance USDT-M futures trading bot.
 
-This project runs a 1x-leverage portfolio loop across four fixed passive markets and two dynamically screened active markets. Each slot is evaluated one symbol at a time by DeepSeek using `deepseek-v4-flash` with `high` reasoning effort, then managed with market entries/exits, rebalancing, stop-loss synchronization, and Telegram reporting.
+This project runs a 1x-leverage portfolio loop across four fixed passive markets and two dynamically screened active markets. Each slot is evaluated one symbol at a time by DeepSeek using `deepseek-v4-flash` with `max` reasoning effort, then managed with market entries/exits, rebalancing, stop-loss synchronization, and Telegram reporting.
 
 > This software is for research and automation experiments. It is not financial advice. Futures trading can lose money quickly, and live mode sends real Binance Futures orders.
 
@@ -12,7 +12,7 @@ This project runs a 1x-leverage portfolio loop across four fixed passive markets
 
 - DeepSeek 기반 LLM 판단
   - 기본 모델: `deepseek-v4-flash`
-  - reasoning effort: `high` (`xhigh` legacy values are normalized to `max`)
+  - reasoning effort: `max` (`xhigh` legacy values are normalized to `max`; `low`/`medium` map to `high`)
   - DeepSeek JSON Output 응답을 로컬에서 검증해 `LONG` 또는 `SHORT`만 허용
 - 6개 슬롯 포트폴리오
   - Passive: `CLUSDT`, `XAUUSDT`, `QQQUSDT`, `BTCUSDT`
@@ -84,7 +84,7 @@ trigger_pct_usdt: 1.0
 ai_prompt_timeframe: 1h
 ai_prompt_candle_count: 100
 deepseek_model: deepseek-v4-flash
-deepseek_reasoning_effort: high
+deepseek_reasoning_effort: max
 deepseek_max_tokens: 8192
 deepseek_timeout_seconds: 300.0
 fixed_leverage: 1
@@ -219,7 +219,7 @@ python -m py_compile main.py src/ai/deepseek_trader.py src/strategy/portfolio_st
 
 - DeepSeek-based LLM decisions
   - Default model: `deepseek-v4-flash`
-  - Reasoning effort: `high` (`xhigh` legacy values are normalized to `max`)
+  - Reasoning effort: `max` (`xhigh` legacy values are normalized to `max`; `low`/`medium` map to `high`)
   - DeepSeek JSON Output is locally validated to accept only `LONG` or `SHORT`
 - Six-slot portfolio
   - Passive: `CLUSDT`, `XAUUSDT`, `QQQUSDT`, `BTCUSDT`
@@ -291,7 +291,7 @@ trigger_pct_usdt: 1.0
 ai_prompt_timeframe: 1h
 ai_prompt_candle_count: 100
 deepseek_model: deepseek-v4-flash
-deepseek_reasoning_effort: high
+deepseek_reasoning_effort: max
 deepseek_max_tokens: 8192
 deepseek_timeout_seconds: 300.0
 fixed_leverage: 1

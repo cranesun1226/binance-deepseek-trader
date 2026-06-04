@@ -150,7 +150,9 @@ def _normalize_reasoning_effort(value: Any) -> str:
     normalized = str(value or DEFAULT_DEEPSEEK_REASONING_EFFORT).strip().lower()
     if normalized in {"max", "xhigh"}:
         return "max"
-    if normalized in {"", "none", "minimal", "low", "medium", "high"}:
+    if normalized in {"low", "medium", "high"}:
+        return "high"
+    if normalized in {"", "none", "minimal"}:
         return DEFAULT_DEEPSEEK_REASONING_EFFORT
     logger.warning(
         "Unsupported deepseek_reasoning_effort=%s; using %s",
