@@ -71,6 +71,7 @@ _DEEPSEEK_MODEL_PRICING_USD_PER_MILLION: dict[str, dict[str, float]] = {
 _SYSTEM_PROMPT = (
     "You are a world-class USDT perpetual futures crypto trader. "
     "Analyze all 100 close prices in balance(not just the latest few) to judge whether a LONG or SHORT position offers a higher expected value. "
+    "Use only English to reason and respond. "
     "Return exactly one json object containing only the decision."
 )
 
