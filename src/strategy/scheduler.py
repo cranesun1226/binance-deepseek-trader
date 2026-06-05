@@ -288,16 +288,12 @@ class TradingScheduler:
                 parts.append("\n".join(visible_lines))
         return "\n".join(parts).strip()
 
-    def _reasoning_text(self, analysis: Dict[str, Any]) -> str:
-        reasoning = str(analysis.get("reasoning") or "").strip()
-        if reasoning:
-            return reasoning
-        details = analysis.get("reasoning_details")
-        if isinstance(details, list) and details:
-            try:
-                return json.dumps(details, ensure_ascii=False, indent=2)
-            except Exception:
-                return str(details)
+    def _decision_reason_text(self, analysis: Dict[str, Any]) -> str:
+        decision = analysis.get("decision")
+        if isinstance(decision, dict):
+            reason = str(decision.get("reason") or "").strip()
+            if reason:
+                return reason
         return ""
 
     def _build_ai_cycle_before_message(self, payload: Dict[str, Any]) -> str:
@@ -320,7 +316,7 @@ class TradingScheduler:
 
     def _build_ai_cycle_after_message(self, payload: Dict[str, Any]) -> str:
         analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
-        reasoning = self._reasoning_text(analysis)
+        decision_reason = self._decision_reason_text(analysis)
         sections: list[tuple[str, Sequence[str], bool]] = [
             (
                 self._format_html_title("Position"),
@@ -328,11 +324,11 @@ class TradingScheduler:
                 True,
             )
         ]
-        if reasoning:
+        if decision_reason:
             sections.append(
                 (
-                    self._format_html_title("DeepSeek Reasoning"),
-                    [sanitize_telegram_html(reasoning)],
+                    self._format_html_title("Decision Reason"),
+                    [sanitize_telegram_html(decision_reason)],
                     False,
                 )
             )

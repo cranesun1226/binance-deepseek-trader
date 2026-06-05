@@ -1,3 +1,4 @@
+import json
 import unittest
 from unittest.mock import Mock, patch
 
@@ -19,7 +20,10 @@ class DeepSeekTraderTests(unittest.TestCase):
             "choices": [
                 {
                     "message": {
-                        "content": '{"decision":"LONG"}',
+                        "content": (
+                            '{"decision":"LONG","reason":"The full close series shows constructive higher lows, '
+                            'with the latest price holding above the prior consolidation area and favoring upside continuation."}'
+                        ),
                         "reasoning_content": "full reasoning text",
                     }
                 }
@@ -40,6 +44,10 @@ class DeepSeekTraderTests(unittest.TestCase):
 
         self.assertIsNotNone(result)
         self.assertEqual(result.decision.decision, "LONG")
+        self.assertEqual(
+            result.decision.reason,
+            "The full close series shows constructive higher lows, with the latest price holding above the prior consolidation area and favoring upside continuation.",
+        )
         self.assertEqual(result.reasoning, "full reasoning text")
         self.assertEqual(mocked_post.call_args.args[0], "https://api.deepseek.com/chat/completions")
         self.assertEqual(mocked_post.call_args.kwargs["headers"]["Authorization"], "Bearer key")
@@ -50,7 +58,8 @@ class DeepSeekTraderTests(unittest.TestCase):
             "You are a world-class USDT perpetual futures crypto trader. "
             "Analyze all 100 close prices in balance(not just the latest few) to judge whether a LONG or SHORT position offers a higher expected value. "
             "Use only English to reason and respond. "
-            "Return exactly one json object containing only the decision.",
+            "Return exactly one json object containing only the decision and reason. "
+            "The reason must be english, reasonable, data-based, and 200 words or fewer.",
         )
         self.assertEqual(payload["messages"][1]["content"], "prompt")
         self.assertEqual(payload["thinking"], {"type": "enabled"})
@@ -64,7 +73,13 @@ class DeepSeekTraderTests(unittest.TestCase):
         response = Mock()
         response.status_code = 200
         response.json.return_value = {
-            "choices": [{"message": {"content": '{"decision":"SHORT"}'}}],
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"decision":"SHORT","reason":"The full close series is rolling over, with weak rebounds and lower highs favoring downside continuation."}'
+                    }
+                }
+            ],
             "usage": {},
         }
 
@@ -86,7 +101,13 @@ class DeepSeekTraderTests(unittest.TestCase):
         response = Mock()
         response.status_code = 200
         response.json.return_value = {
-            "choices": [{"message": {"content": '{"decision":"SHORT"}'}}],
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"decision":"SHORT","reason":"The full close series is rolling over, with weak rebounds and lower highs favoring downside continuation."}'
+                    }
+                }
+            ],
             "usage": {},
         }
 
@@ -113,7 +134,13 @@ class DeepSeekTraderTests(unittest.TestCase):
         valid_response = Mock()
         valid_response.status_code = 200
         valid_response.json.return_value = {
-            "choices": [{"message": {"content": '{"decision":"LONG"}'}}],
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"decision":"LONG","reason":"The full close series stabilized after the dip, and recent closes hold above the recovery base, favoring long exposure."}'
+                    }
+                }
+            ],
             "usage": {},
         }
 
@@ -135,13 +162,25 @@ class DeepSeekTraderTests(unittest.TestCase):
         extra_field_response = Mock()
         extra_field_response.status_code = 200
         extra_field_response.json.return_value = {
-            "choices": [{"message": {"content": '{"decision":"LONG","reason":"looks good"}'}}],
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"decision":"LONG","reason":"The full close series supports upside continuation.","confidence":0.72}'
+                    }
+                }
+            ],
             "usage": {},
         }
         valid_response = Mock()
         valid_response.status_code = 200
         valid_response.json.return_value = {
-            "choices": [{"message": {"content": '{"decision":"SHORT"}'}}],
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"decision":"SHORT","reason":"The full close series keeps failing at lower highs, while the latest closes remain weak and favor downside exposure."}'
+                    }
+                }
+            ],
             "usage": {},
         }
 
@@ -163,7 +202,13 @@ class DeepSeekTraderTests(unittest.TestCase):
         lowercase_response = Mock()
         lowercase_response.status_code = 200
         lowercase_response.json.return_value = {
-            "choices": [{"message": {"content": '{"decision":"long"}'}}],
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"decision":"long","reason":"The full close series shows constructive higher lows, but the decision casing is invalid."}'
+                    }
+                }
+            ],
             "usage": {},
         }
 
@@ -181,6 +226,25 @@ class DeepSeekTraderTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(mocked_post.call_count, deepseek_trader.DEEPSEEK_GENERATE_MAX_RETRIES)
         self.assertEqual(mocked_sleep.call_count, deepseek_trader.DEEPSEEK_GENERATE_MAX_RETRIES - 1)
+
+    def test_decision_reason_over_word_limit_is_rejected(self):
+        overlong_reason = " ".join(["word"] * (deepseek_trader.DECISION_REASON_MAX_WORDS + 1))
+        raw_response = json.dumps({"decision": "LONG", "reason": overlong_reason})
+
+        with self.assertRaises(ValueError):
+            deepseek_trader._parse_strict_decision_response(
+                raw_response,
+                deepseek_trader.TradeDirectionDecision,
+            )
+
+    def test_decision_reason_with_cjk_text_is_rejected(self):
+        raw_response = json.dumps({"decision": "SHORT", "reason": "The flow is weak \u4e0a downside continuation."})
+
+        with self.assertRaises(ValueError):
+            deepseek_trader._parse_strict_decision_response(
+                raw_response,
+                deepseek_trader.TradeDirectionDecision,
+            )
 
     def test_invalid_prompt_payload_fails_before_deepseek_call(self):
         with patch("src.ai.deepseek_trader._call_deepseek_structured_decision") as mocked_call, patch(
@@ -210,7 +274,9 @@ class DeepSeekTraderTests(unittest.TestCase):
             'Use your best judgment to decide whether LONG or SHORT position offers the higher expected value in the future.\n'
             'Consider all 100 supplied close prices in balance, not only the most recent few, when judging the overall setup.\n'
             'Use only the supplied 1h close prices and current_price.\n'
-            'Return JSON only: {"decision":"LONG"} or {"decision":"SHORT"}.\n'
+            'Return JSON only with exactly two fields: decision and reason.\n'
+            'The reason must be English, 200 words or fewer, and explain the key points in the full close-price flow(not just the latest few) that drove the decision.\n'
+            'Examples: {"decision":"LONG","reason":"..."} or {"decision":"SHORT","reason":"..."}.\n'
             'Market payload:\n{"symbol":"BTCUSDT","reference_price":100.0,"timeframes":{"1h":[98.0,99.0,100.0]}}',
         )
 

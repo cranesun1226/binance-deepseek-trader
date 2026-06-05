@@ -29,6 +29,29 @@ class SchedulerTests(unittest.TestCase):
         mocked_run.assert_called_once()
         mocked_save.assert_called_once()
 
+    def test_ai_decision_message_uses_structured_decision_reason(self):
+        scheduler = TradingScheduler()
+        message = scheduler._build_ai_cycle_after_message(
+            {
+                "slot_id": "passive_1",
+                "symbol": "BTCUSDT",
+                "decision": "LONG",
+                "position": None,
+                "analysis": {
+                    "decision": {
+                        "decision": "LONG",
+                        "reason": "The full close series holds higher lows and recent closes sustain above the recovery base.",
+                    },
+                    "reasoning": "raw internal reasoning should stay hidden",
+                },
+            }
+        )
+
+        self.assertIn("Decision Reason", message)
+        self.assertIn("The full close series holds higher lows", message)
+        self.assertNotIn("DeepSeek Reasoning", message)
+        self.assertNotIn("raw internal reasoning", message)
+
 
 if __name__ == "__main__":
     unittest.main()

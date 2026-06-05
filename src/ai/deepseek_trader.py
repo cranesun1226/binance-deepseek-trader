@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Generic, Literal, Optional, TypeVar
@@ -53,7 +54,9 @@ DEEPSEEK_MAX_REASONING_EFFORT = "max"
 DEEPSEEK_DEFAULT_REASONING_EFFORT = DEEPSEEK_MAX_REASONING_EFFORT
 DEEPSEEK_DEFAULT_TIMEOUT_SECONDS = 300.0
 DEEPSEEK_CONNECT_TIMEOUT_SECONDS = 10.0
+DECISION_REASON_MAX_WORDS = 200
 _ONE_MILLION = 1_000_000
+_CJK_PATTERN = re.compile(r"[\u4e00-\u9fff]")
 
 _DEEPSEEK_MODEL_PRICING_USD_PER_MILLION: dict[str, dict[str, float]] = {
     DEEPSEEK_FLASH_MODEL: {
@@ -72,7 +75,8 @@ _SYSTEM_PROMPT = (
     "You are a world-class USDT perpetual futures crypto trader. "
     "Analyze all 100 close prices in balance(not just the latest few) to judge whether a LONG or SHORT position offers a higher expected value. "
     "Use only English to reason and respond. "
-    "Return exactly one json object containing only the decision."
+    "Return exactly one json object containing only the decision and reason. "
+    "The reason must be english, reasonable, data-based, and 200 words or fewer."
 )
 
 DecisionT = TypeVar("DecisionT", bound=BaseModel)
@@ -82,7 +86,12 @@ class TradeDirectionDecision(BaseModel):
     """Structured DeepSeek response for one pure symbol direction decision."""
 
     decision: Literal["LONG", "SHORT"] = Field(
-        description="Return exactly one direction decision, LONG or SHORT, based on the supplied close-price data."
+        description="Return exactly one direction decision, LONG or SHORT, based on the supplied 100 close-price data equally."
+    )
+    reason: str = Field(
+        description=(
+            "English rationale in 200 words or fewer. Explain which points in the full supplied close-price flow drove the LONG or SHORT decision."
+        )
     )
 
 
@@ -181,7 +190,9 @@ def _format_direction_prompt(payload: Dict[str, Any]) -> str:
         "Use your best judgment to decide whether LONG or SHORT position offers the higher expected value in the future.\n"
         "Consider all 100 supplied close prices in balance, not only the most recent few, when judging the overall setup.\n"
         "Use only the supplied 1h close prices and current_price.\n"
-        "Return JSON only: {\"decision\":\"LONG\"} or {\"decision\":\"SHORT\"}.\n"
+        "Return JSON only with exactly two fields: decision and reason.\n"
+        "The reason must be English, 200 words or fewer, and explain the key points in the full close-price flow(not just the latest few) that drove the decision.\n"
+        "Examples: {\"decision\":\"LONG\",\"reason\":\"...\"} or {\"decision\":\"SHORT\",\"reason\":\"...\"}.\n"
         f"Market payload:\n{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"
     )
 
@@ -204,6 +215,23 @@ def _json_object_response_format() -> dict[str, str]:
     return {"type": "json_object"}
 
 
+def _decision_reason_word_count(value: str) -> int:
+    return len([part for part in value.split(" ") if part])
+
+
+def _normalize_decision_reason(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("DeepSeek decision reason must be a string")
+    reason = " ".join(value.strip().split())
+    if not reason:
+        raise ValueError("DeepSeek decision reason must not be empty")
+    if _CJK_PATTERN.search(reason):
+        raise ValueError("DeepSeek decision reason must use English only")
+    if _decision_reason_word_count(reason) > DECISION_REASON_MAX_WORDS:
+        raise ValueError(f"DeepSeek decision reason must be {DECISION_REASON_MAX_WORDS} words or fewer")
+    return reason
+
+
 def _parse_strict_decision_response(raw_response: str, response_model: type[DecisionT]) -> DecisionT:
     try:
         payload = json.loads(raw_response)
@@ -212,14 +240,19 @@ def _parse_strict_decision_response(raw_response: str, response_model: type[Deci
 
     if not isinstance(payload, dict):
         raise ValueError("DeepSeek decision response must be a JSON object")
-    if set(payload.keys()) != {"decision"}:
-        raise ValueError("DeepSeek decision response must contain only the decision field")
+    if set(payload.keys()) != {"decision", "reason"}:
+        raise ValueError("DeepSeek decision response must contain only the decision and reason fields")
 
     decision_value = payload.get("decision")
     if decision_value not in {"LONG", "SHORT"}:
         raise ValueError("DeepSeek decision must be exactly LONG or SHORT")
+    reason_value = _normalize_decision_reason(payload.get("reason"))
 
-    canonical_response = json.dumps({"decision": decision_value}, ensure_ascii=False, separators=(",", ":"))
+    canonical_response = json.dumps(
+        {"decision": decision_value, "reason": reason_value},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
     return response_model.model_validate_json(canonical_response)
 
 
@@ -578,8 +611,13 @@ def evaluate_trade_direction(
     if normalized_value not in {"LONG", "SHORT"}:
         logger.error("DeepSeek returned invalid direction decision=%s", normalized_value)
         return None
+    try:
+        normalized_reason = _normalize_decision_reason(getattr(decision, "reason", ""))
+    except ValueError as exc:
+        logger.error("DeepSeek returned invalid direction reason: %s", exc)
+        return None
 
-    normalized_decision = TradeDirectionDecision(decision=normalized_value)
+    normalized_decision = TradeDirectionDecision(decision=normalized_value, reason=normalized_reason)
     saved_paths = _save_direction_analysis_data(
         cycle_dir=cycle_dir,
         prompt=prompt,

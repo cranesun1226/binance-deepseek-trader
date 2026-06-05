@@ -29,7 +29,7 @@ This project runs a 1x-leverage portfolio loop across four fixed passive markets
   - 자동화 계좌 전용 전제: 관리되지 않는 수동 포지션은 자동 청산 대상
 - 알림
   - Telegram 메시지
-  - 긴 LLM reasoning 자동 분할 전송
+  - structured `reason` 판단 근거 요약 전송
   - 1시간봉 가격 차트 이미지 전송
 - 검증
   - 실제 주문 없이 Binance 공개 데이터, DeepSeek, Telegram까지 통과하는 live-data dry-run 스크립트 제공
@@ -48,7 +48,7 @@ This project runs a 1x-leverage portfolio loop across four fixed passive markets
 
 ### LLM 프롬프트
 
-LLM에는 한 번에 한 종목의 `symbol`, 현재 `reference_price`, 그리고 1시간봉 종가 100개만 전달됩니다. 최신 종가는 판단 시점의 실시간 기준가로 보정됩니다. DeepSeek API에는 `response_format: {"type":"json_object"}`를 요청하고, 런타임이 `{"decision":"LONG"}` 또는 `{"decision":"SHORT"}`만 통과시킵니다.
+LLM에는 한 번에 한 종목의 `symbol`, 현재 `reference_price`, 그리고 1시간봉 종가 100개만 전달됩니다. 최신 종가는 판단 시점의 실시간 기준가로 보정됩니다. DeepSeek API에는 `response_format: {"type":"json_object"}`를 요청하고, 런타임이 `{"decision":"LONG","reason":"..."}` 또는 `{"decision":"SHORT","reason":"..."}`만 통과시킵니다. `reason`은 영어 200단어 이하의 판단 근거 요약이며, Telegram에는 raw reasoning 대신 이 값이 표시됩니다.
 
 ### 설치
 
@@ -236,7 +236,7 @@ python -m py_compile main.py src/ai/deepseek_trader.py src/strategy/portfolio_st
   - Designed for a dedicated automation account: unmanaged manual positions may be closed automatically
 - Notifications
   - Telegram messages
-  - Long LLM reasoning split into multiple Telegram chunks
+  - Structured `reason` rationale summaries
   - 1h price chart images
 - Validation
   - Includes a live-data dry-run script that calls Binance public data, DeepSeek, and Telegram without submitting Binance orders
@@ -255,7 +255,7 @@ The project has passed a full live-data dry run for all six slots, including Dee
 
 ### LLM Prompt
 
-The LLM receives only one symbol at a time: `symbol`, live `reference_price`, and 100 recent 1h close prices. The newest close is aligned to the live reference price at decision time. The API request uses `response_format: {"type":"json_object"}`, and the runtime accepts only `{"decision":"LONG"}` or `{"decision":"SHORT"}`.
+The LLM receives only one symbol at a time: `symbol`, live `reference_price`, and 100 recent 1h close prices. The newest close is aligned to the live reference price at decision time. The API request uses `response_format: {"type":"json_object"}`, and the runtime accepts only `{"decision":"LONG","reason":"..."}` or `{"decision":"SHORT","reason":"..."}`. The `reason` value must be an English rationale summary of 200 words or fewer, and Telegram displays it instead of raw reasoning output.
 
 ### Installation
 
