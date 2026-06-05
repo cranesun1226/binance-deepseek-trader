@@ -300,7 +300,6 @@ class TradingScheduler:
         return self._build_message(
             title=self._format_html_title("Binance DeepSeek Trader | AI Cycle Start"),
             summary_lines=[
-                self._format_html_line("Slot", payload.get("slot_label") or payload.get("slot_id"), code=True),
                 self._format_html_line("Symbol", payload.get("symbol"), code=True),
                 self._format_html_line("Price", self._format_usdt(payload.get("current_price"))),
                 self._format_html_line("Trigger", self._translate_trigger_reason(payload.get("trigger_reason"))),
@@ -335,7 +334,6 @@ class TradingScheduler:
         return self._build_message(
             title=self._format_html_title("AI Decision"),
             summary_lines=[
-                self._format_html_line("Slot", payload.get("slot_label") or payload.get("slot_id"), code=True),
                 self._format_html_line("Symbol", payload.get("symbol"), code=True),
                 self._format_html_line("Decision", payload.get("decision") or "None", bold=True),
             ],
@@ -348,13 +346,11 @@ class TradingScheduler:
             if not isinstance(slot_result, dict):
                 continue
             label = slot_result.get("slot_label") or slot_result.get("slot_id")
-            symbol = slot_result.get("symbol") or "-"
             action = self._translate_action(slot_result.get("action"))
-            decision = slot_result.get("ai_decision") or slot_result.get("position_exit_ai_decision") or "-"
             slot_lines.append(
                 self._format_html_line(
                     str(label),
-                    f"{symbol} / {action} / {decision}",
+                    f"{action}",
                     code=False,
                 )
             )
@@ -400,6 +396,7 @@ class TradingScheduler:
         return "\n".join(
             [
                 "<b>AI Close Prices Line Chart</b>",
+                "",
                 self._format_html_line("Symbol", payload.get("symbol"), code=True),
                 self._format_html_line("Timeframe", timeframe, code=True),
                 self._format_html_line("Count", len(close_prices)),
