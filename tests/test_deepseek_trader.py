@@ -56,7 +56,7 @@ class DeepSeekTraderTests(unittest.TestCase):
         self.assertEqual(
             payload["messages"][0]["content"],
             "You are a world-class USDT perpetual futures crypto trader. "
-            "Analyze all 100 close prices in balance(not just the latest few) to judge whether a LONG or SHORT position offers a higher expected value. "
+            "Analyze based on your sense of being a trader to judge whether a LONG or SHORT position offers a higher expected value in the future. "
             "Use only English to reason and respond. "
             "Return exactly one json object containing only the decision and reason. "
             "The reason must be english, reasonable, data-based, and 200 words or fewer.",
@@ -271,11 +271,9 @@ class DeepSeekTraderTests(unittest.TestCase):
         self.assertEqual(
             prompt,
             'You are a world-class BTCUSDT trader.\n'
-            'Use your best judgment to decide whether LONG or SHORT position offers the higher expected value in the future.\n'
-            'Consider all 100 supplied close prices in balance, not only the most recent few, when judging the overall setup.\n'
-            'Use only the supplied 1h close prices and current_price.\n'
             'Return JSON only with exactly two fields: decision and reason.\n'
-            'The reason must be English, 200 words or fewer, and explain the key points in the full close-price flow(not just the latest few) that drove the decision.\n'
+            'Analyze based on your sense of being a trader to judge whether a LONG or SHORT position offers a higher expected value in the future.\n'
+            'The reason must be english, reasonable, data-based, and 200 words or fewer.'
             'Examples: {"decision":"LONG","reason":"..."} or {"decision":"SHORT","reason":"..."}.\n'
             'Market payload:\n{"symbol":"BTCUSDT","reference_price":100.0,"timeframes":{"1h":[98.0,99.0,100.0]}}',
         )

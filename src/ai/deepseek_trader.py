@@ -73,7 +73,7 @@ _DEEPSEEK_MODEL_PRICING_USD_PER_MILLION: dict[str, dict[str, float]] = {
 
 _SYSTEM_PROMPT = (
     "You are a world-class USDT perpetual futures crypto trader. "
-    "Analyze all 100 close prices in balance(not just the latest few) to judge whether a LONG or SHORT position offers a higher expected value. "
+    "Analyze based on your sense of being a trader to judge whether a LONG or SHORT position offers a higher expected value in the future. "
     "Use only English to reason and respond. "
     "Return exactly one json object containing only the decision and reason. "
     "The reason must be english, reasonable, data-based, and 200 words or fewer."
@@ -86,11 +86,11 @@ class TradeDirectionDecision(BaseModel):
     """Structured DeepSeek response for one pure symbol direction decision."""
 
     decision: Literal["LONG", "SHORT"] = Field(
-        description="Return exactly one direction decision, LONG or SHORT, based on the supplied 100 close-price data equally."
+        description="Return exactly one direction decision, LONG or SHORT."
     )
     reason: str = Field(
         description=(
-            "English rationale in 200 words or fewer. Explain which points in the full supplied close-price flow drove the LONG or SHORT decision."
+            "English rationale in 200 words or fewer to decide the LONG or SHORT position."
         )
     )
 
@@ -187,11 +187,9 @@ def _format_direction_prompt(payload: Dict[str, Any]) -> str:
     symbol = str(payload.get("symbol") or "the supplied symbol").strip().upper() or "the supplied symbol"
     return (
         f"You are a world-class {symbol} trader.\n"
-        "Use your best judgment to decide whether LONG or SHORT position offers the higher expected value in the future.\n"
-        "Consider all 100 supplied close prices in balance, not only the most recent few, when judging the overall setup.\n"
-        "Use only the supplied 1h close prices and current_price.\n"
         "Return JSON only with exactly two fields: decision and reason.\n"
-        "The reason must be English, 200 words or fewer, and explain the key points in the full close-price flow(not just the latest few) that drove the decision.\n"
+        "Analyze based on your sense of being a trader to judge whether a LONG or SHORT position offers a higher expected value in the future.\n"
+        "The reason must be english, reasonable, data-based, and 200 words or fewer."
         "Examples: {\"decision\":\"LONG\",\"reason\":\"...\"} or {\"decision\":\"SHORT\",\"reason\":\"...\"}.\n"
         f"Market payload:\n{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"
     )
