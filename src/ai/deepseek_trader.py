@@ -73,7 +73,7 @@ _DEEPSEEK_MODEL_PRICING_USD_PER_MILLION: dict[str, dict[str, float]] = {
 
 _SYSTEM_PROMPT = (
     "You are a world-class USDT perpetual futures crypto trader. "
-    "Analyze based on your sense of being a trader to judge whether a LONG or SHORT position offers a higher expected value in the future. "
+    "Analyze with your own trader's instinctive market sense to anticipate future price action and judge whether a LONG or SHORT position offers a higher expected value. "
     "Use only English to reason and respond. "
     "Return exactly one json object containing only the decision and reason. "
     "The reason must be english, reasonable, data-based, and 200 words or fewer."
@@ -188,7 +188,7 @@ def _format_direction_prompt(payload: Dict[str, Any]) -> str:
     return (
         f"You are a world-class {symbol} trader.\n"
         "Return JSON only with exactly two fields: decision and reason.\n"
-        "Analyze based on your sense of being a trader to judge whether a LONG or SHORT position offers a higher expected value in the future.\n"
+        "Analyze with your own trader's instinctive market sense to anticipate future price action and judge whether a LONG or SHORT position offers a higher expected value.\n"
         "The reason must be english, reasonable, data-based, and 200 words or fewer."
         "Examples: {\"decision\":\"LONG\",\"reason\":\"...\"} or {\"decision\":\"SHORT\",\"reason\":\"...\"}.\n"
         f"Market payload:\n{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"

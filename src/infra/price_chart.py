@@ -275,7 +275,7 @@ def build_close_price_line_chart_png(
     canvas.draw_polyline(points, shadow_color, thickness=10)
     canvas.draw_polyline(points, line_color, thickness=4)
 
-    # Mark the first and latest closes so the direction of the 100-candle series is obvious.
+    # Mark the first and latest closes so the direction of the close-price series is obvious.
     first_x, first_y = points[0]
     last_x, last_y = points[-1]
     canvas.draw_circle(first_x, first_y, 8, _BACKGROUND)
