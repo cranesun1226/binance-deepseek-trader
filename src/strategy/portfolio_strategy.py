@@ -1181,6 +1181,8 @@ def _screen_active_candidate(
             timeout=float(config["screener_timeout"]),
             retries=int(config["screener_retries"]),
             request_sleep=float(config["screener_request_sleep"]),
+            required_kline_interval=str(config["ai_prompt_timeframe"]),
+            required_kline_count=int(config["ai_prompt_candle_count"]),
         )
     else:
         screener_output = screen_active_symbol(
@@ -1193,6 +1195,8 @@ def _screen_active_candidate(
             timeout=float(config["screener_timeout"]),
             retries=int(config["screener_retries"]),
             request_sleep=float(config["screener_request_sleep"]),
+            required_kline_interval=str(config["ai_prompt_timeframe"]),
+            required_kline_count=int(config["ai_prompt_candle_count"]),
         )
     selection = screener_output.get("selection") if isinstance(screener_output, dict) else {}
     selected_symbol = _normalize_symbol((selection or {}).get("symbol"))
@@ -1290,6 +1294,29 @@ def _evaluate_slot_direction(
         "ai_prompt_candle_count": market_context.get("ai_prompt_candle_count"),
         "ai_prompt_close_prices": list(close_prices),
     }
+
+
+def _evaluate_slot_direction_or_none(**kwargs: Any) -> tuple[Optional[str], Dict[str, Any], Dict[str, Any], Optional[str]]:
+    slot = kwargs.get("slot")
+    symbol = kwargs.get("symbol")
+    decision_mode = kwargs.get("decision_mode")
+    try:
+        decision, ai_analysis, prompt_payload = _evaluate_slot_direction(**kwargs)
+        return decision, ai_analysis, prompt_payload, None
+    except Exception as exc:
+        logger.warning(
+            "Slot AI direction evaluation failed | %s",
+            format_log_details(
+                {
+                    "slot_id": getattr(slot, "slot_id", None),
+                    "symbol": symbol,
+                    "decision_mode": decision_mode,
+                    "error": str(exc),
+                }
+            ),
+            exc_info=True,
+        )
+        return None, {"error": str(exc)}, {}, str(exc)
 
 
 def _reference_price(symbol: str) -> Optional[float]:
@@ -1438,7 +1465,7 @@ def _run_passive_slot(
             symbol=symbol,
         )
 
-    decision, ai_analysis, prompt_payload = _evaluate_slot_direction(
+    decision, ai_analysis, prompt_payload, ai_error = _evaluate_slot_direction_or_none(
         slot=slot,
         symbol=symbol,
         reference_price=reference_price,
@@ -1454,6 +1481,8 @@ def _run_passive_slot(
     result["ai_decision"] = decision
     result["ai_analysis"] = ai_analysis
     result.update(prompt_payload)
+    if ai_error:
+        result["error"] = ai_error
     if decision is None:
         result["action"] = "ai_decision_failed"
         return result, slot_state
@@ -1614,7 +1643,7 @@ def _run_active_slot(
             )
             return result, updated_state, current_symbol
 
-        exit_decision, exit_analysis, prompt_payload = _evaluate_slot_direction(
+        exit_decision, exit_analysis, prompt_payload, exit_error = _evaluate_slot_direction_or_none(
             slot=slot,
             symbol=current_symbol,
             reference_price=reference_price,
@@ -1630,6 +1659,8 @@ def _run_active_slot(
         result["position_exit_ai_decision"] = exit_decision
         result["position_exit_ai_analysis"] = exit_analysis
         result.update(prompt_payload)
+        if exit_error:
+            result["error"] = exit_error
         if exit_decision is None:
             result["action"] = "ai_decision_failed"
             return result, slot_state, current_symbol
@@ -1729,7 +1760,7 @@ def _run_active_slot(
     slot_dir = _slot_artifact_dir(cycle_dir_factory(), slot.slot_id)
     if isinstance(screener_output, dict):
         _persist_screener_output(slot_dir, screener_output)
-    decision, ai_analysis, prompt_payload = _evaluate_slot_direction(
+    decision, ai_analysis, prompt_payload, ai_error = _evaluate_slot_direction_or_none(
         slot=slot,
         symbol=candidate_symbol,
         reference_price=reference_price,
@@ -1745,6 +1776,8 @@ def _run_active_slot(
     result["ai_decision"] = decision
     result["ai_analysis"] = ai_analysis
     result.update(prompt_payload)
+    if ai_error:
+        result["error"] = ai_error
     if decision is None:
         result["action"] = "candidate_ai_decision_failed"
         return result, slot_state, None
@@ -1817,6 +1850,8 @@ def run_portfolio_cycle(
             "stop_loss_pct": config["stop_loss_pct"],
             "passive_symbols": list(config["passive_symbols"]),
             "active_targets": list(config["active_targets"]),
+            "ai_prompt_timeframe": config["ai_prompt_timeframe"],
+            "ai_prompt_candle_count": config["ai_prompt_candle_count"],
             "deepseek_model": config["deepseek_model"],
             "deepseek_reasoning_effort": config["deepseek_reasoning_effort"],
             "active1_min_abs_change_pct": config["active1_min_abs_change_pct"],

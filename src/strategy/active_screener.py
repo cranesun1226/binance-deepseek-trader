@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Callable, Dict, Optional, Sequence
 
 try:
     import requests
@@ -17,10 +17,12 @@ except ModuleNotFoundError:  # pragma: no cover - exercised in lightweight test 
     requests = _RequestsFallback()
 
 from src.binance.binance_rate_limit import binance_api_call_with_retry
-from src.binance.common import get_binance_futures_base_url
+from src.binance.common import get_binance_futures_base_url, to_binance_kline_interval
 from src.infra.logger import format_log_details, get_logger
+from src.strategy.runtime_config import DEFAULT_AI_PROMPT_CANDLE_COUNT, DEFAULT_AI_PROMPT_TIMEFRAME
 
 logger = get_logger("active_screener")
+KLINE_VALIDATION_FAILURE_LOG_LIMIT = 20
 
 
 class NoActiveCandidateError(RuntimeError):
@@ -88,6 +90,77 @@ class BinanceActiveMarketDataClient:
     def ticker_24hr(self) -> list[Dict[str, Any]]:
         data = self._json("/fapi/v1/ticker/24hr")
         return data if isinstance(data, list) else []
+
+    def klines(self, symbol: str, interval: Any, limit: int) -> list[Any]:
+        normalized_symbol = str(symbol or "").strip().upper()
+        if not normalized_symbol:
+            return []
+        data = self._json(
+            "/fapi/v1/klines",
+            {
+                "symbol": normalized_symbol,
+                "interval": to_binance_kline_interval(interval),
+                "limit": max(1, int(limit)),
+            },
+        )
+        return data if isinstance(data, list) else []
+
+
+def build_required_kline_lookup(
+    client: BinanceActiveMarketDataClient,
+    *,
+    interval: Any,
+    required_count: int,
+) -> Optional[Callable[[str], Dict[str, Any]]]:
+    normalized_required_count = max(0, safe_int(required_count, 0))
+    if normalized_required_count <= 0:
+        return None
+    normalized_interval = to_binance_kline_interval(interval)
+    cache: dict[str, Dict[str, Any]] = {}
+
+    def _lookup(symbol: str) -> Dict[str, Any]:
+        normalized_symbol = str(symbol or "").strip().upper()
+        if not normalized_symbol:
+            return {
+                "available": False,
+                "interval": normalized_interval,
+                "required_count": normalized_required_count,
+                "available_count": 0,
+                "error": "symbol is required",
+            }
+        if normalized_symbol in cache:
+            return dict(cache[normalized_symbol])
+        try:
+            klines = client.klines(normalized_symbol, normalized_interval, normalized_required_count)
+            available_count = len(klines)
+            validation = {
+                "available": available_count >= normalized_required_count,
+                "interval": normalized_interval,
+                "required_count": normalized_required_count,
+                "available_count": available_count,
+            }
+        except Exception as exc:
+            validation = {
+                "available": False,
+                "interval": normalized_interval,
+                "required_count": normalized_required_count,
+                "available_count": 0,
+                "error": str(exc),
+            }
+            logger.warning(
+                "Active candidate kline validation failed for %s | %s",
+                normalized_symbol,
+                format_log_details(validation),
+            )
+        if not bool(validation.get("available")):
+            logger.info(
+                "Active candidate skipped due to insufficient klines | %s",
+                format_log_details({"symbol": normalized_symbol, **validation}),
+            )
+        cache[normalized_symbol] = dict(validation)
+        return dict(validation)
+
+    return _lookup
 
 
 def build_usdt_perpetual_universe(exchange_info: Dict[str, Any], quote: str = "USDT") -> set[str]:
@@ -162,6 +235,7 @@ def select_active_symbol_from_tickers(
     candidate_pool_size: int = 10,
     min_abs_change_pct: Optional[float] = None,
     max_abs_change_pct: Optional[float] = None,
+    kline_availability_lookup: Optional[Callable[[str], Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     excluded = {str(symbol or "").strip().upper() for symbol in excluded_symbols if str(symbol or "").strip()}
     rows: list[Dict[str, Any]] = []
@@ -188,7 +262,29 @@ def select_active_symbol_from_tickers(
             str(row.get("symbol") or ""),
         )
     )
-    top_candidates = rows[: max(1, int(candidate_pool_size))]
+    pool_size = max(1, int(candidate_pool_size))
+    top_candidates: list[Dict[str, Any]] = []
+    kline_validation_checked_count = 0
+    kline_validation_failures: list[Dict[str, Any]] = []
+
+    for row in rows:
+        if kline_availability_lookup is not None:
+            symbol = str(row.get("symbol") or "").strip().upper()
+            kline_validation_checked_count += 1
+            try:
+                validation = kline_availability_lookup(symbol)
+            except Exception as exc:
+                validation = {"available": False, "error": str(exc)}
+            validation_payload = dict(validation) if isinstance(validation, dict) else {"available": False}
+            row["kline_validation"] = validation_payload
+            if not bool(validation_payload.get("available")):
+                if len(kline_validation_failures) < KLINE_VALIDATION_FAILURE_LOG_LIMIT:
+                    kline_validation_failures.append({"symbol": symbol, **validation_payload})
+                continue
+        top_candidates.append(row)
+        if len(top_candidates) >= pool_size:
+            break
+
     selected = max(
         top_candidates,
         key=lambda row: (
@@ -203,6 +299,11 @@ def select_active_symbol_from_tickers(
         "selected": selected,
         "top_candidates": top_candidates,
         "candidate_count": len(rows),
+        "kline_validation_checked_count": kline_validation_checked_count,
+        "kline_rejected_count": kline_validation_checked_count - len(top_candidates)
+        if kline_availability_lookup is not None
+        else 0,
+        "kline_validation_failures": kline_validation_failures,
         "target_abs_change_pct": float(target_abs_change_pct),
         "min_abs_change_pct": min_abs_change_pct,
         "max_abs_change_pct": max_abs_change_pct,
@@ -221,6 +322,8 @@ def screen_active_symbol(
     timeout: float = 30.0,
     retries: int = 3,
     request_sleep: float = 0.10,
+    required_kline_interval: Any = DEFAULT_AI_PROMPT_TIMEFRAME,
+    required_kline_count: int = DEFAULT_AI_PROMPT_CANDLE_COUNT,
 ) -> Dict[str, Any]:
     client = BinanceActiveMarketDataClient(
         timeout=timeout,
@@ -236,6 +339,8 @@ def screen_active_symbol(
                 "max_abs_change_pct": max_abs_change_pct,
                 "quote": quote,
                 "candidate_pool_size": candidate_pool_size,
+                "required_kline_interval": required_kline_interval,
+                "required_kline_count": required_kline_count,
                 "excluded_symbols": sorted(
                     {str(symbol or '').strip().upper() for symbol in excluded_symbols if str(symbol or '').strip()}
                 ),
@@ -245,6 +350,11 @@ def screen_active_symbol(
     exchange_info = client.exchange_info()
     universe = build_usdt_perpetual_universe(exchange_info, quote=quote)
     tickers = client.ticker_24hr()
+    kline_availability_lookup = build_required_kline_lookup(
+        client,
+        interval=required_kline_interval,
+        required_count=safe_int(required_kline_count, 0),
+    )
     selection = select_active_symbol_from_tickers(
         tickers,
         universe=universe,
@@ -253,13 +363,19 @@ def screen_active_symbol(
         candidate_pool_size=candidate_pool_size,
         min_abs_change_pct=min_abs_change_pct,
         max_abs_change_pct=max_abs_change_pct,
+        kline_availability_lookup=kline_availability_lookup,
     )
     if not selection.get("symbol"):
+        kline_requirement = (
+            f" and at least {required_kline_count} {to_binance_kline_interval(required_kline_interval)} klines"
+            if safe_int(required_kline_count, 0) > 0
+            else ""
+        )
         if min_abs_change_pct is not None or max_abs_change_pct is not None:
             raise NoActiveCandidateError(
-                f"active screener found no candidate with abs(24h change) between {min_abs_change_pct}% and {max_abs_change_pct}%"
+                f"active screener found no candidate with abs(24h change) between {min_abs_change_pct}% and {max_abs_change_pct}%{kline_requirement}"
             )
-        raise NoActiveCandidateError("active screener did not return a tradable candidate")
+        raise NoActiveCandidateError(f"active screener did not return a tradable candidate{kline_requirement}")
     return {
         "metadata": {
             "captured_at": utc_now_iso(),
@@ -271,6 +387,8 @@ def screen_active_symbol(
             "candidate_pool_size": max(1, int(candidate_pool_size)),
             "min_abs_change_pct": min_abs_change_pct,
             "max_abs_change_pct": max_abs_change_pct,
+            "required_kline_interval": to_binance_kline_interval(required_kline_interval),
+            "required_kline_count": max(0, safe_int(required_kline_count, 0)),
         },
         "selection": selection,
     }
@@ -287,6 +405,8 @@ def screen_active_tradfi_symbol(
     timeout: float = 30.0,
     retries: int = 3,
     request_sleep: float = 0.10,
+    required_kline_interval: Any = DEFAULT_AI_PROMPT_TIMEFRAME,
+    required_kline_count: int = DEFAULT_AI_PROMPT_CANDLE_COUNT,
 ) -> Dict[str, Any]:
     client = BinanceActiveMarketDataClient(
         timeout=timeout,
@@ -302,6 +422,8 @@ def screen_active_tradfi_symbol(
                 "max_abs_change_pct": max_abs_change_pct,
                 "quote": quote,
                 "candidate_pool_size": candidate_pool_size,
+                "required_kline_interval": required_kline_interval,
+                "required_kline_count": required_kline_count,
                 "excluded_symbols": sorted(
                     {str(symbol or '').strip().upper() for symbol in excluded_symbols if str(symbol or '').strip()}
                 ),
@@ -311,6 +433,11 @@ def screen_active_tradfi_symbol(
     exchange_info = client.exchange_info()
     universe = build_usdt_tradfi_perpetual_universe(exchange_info, quote=quote)
     tickers = client.ticker_24hr()
+    kline_availability_lookup = build_required_kline_lookup(
+        client,
+        interval=required_kline_interval,
+        required_count=safe_int(required_kline_count, 0),
+    )
     selection = select_active_symbol_from_tickers(
         tickers,
         universe=universe,
@@ -319,10 +446,16 @@ def screen_active_tradfi_symbol(
         candidate_pool_size=candidate_pool_size,
         min_abs_change_pct=float(min_abs_change_pct),
         max_abs_change_pct=float(max_abs_change_pct),
+        kline_availability_lookup=kline_availability_lookup,
     )
     if not selection.get("symbol"):
+        kline_requirement = (
+            f" and at least {required_kline_count} {to_binance_kline_interval(required_kline_interval)} klines"
+            if safe_int(required_kline_count, 0) > 0
+            else ""
+        )
         raise NoActiveCandidateError(
-            f"active TradFi screener found no candidate with abs(24h change) between {min_abs_change_pct}% and {max_abs_change_pct}%"
+            f"active TradFi screener found no candidate with abs(24h change) between {min_abs_change_pct}% and {max_abs_change_pct}%{kline_requirement}"
         )
     return {
         "metadata": {
@@ -335,6 +468,8 @@ def screen_active_tradfi_symbol(
             "candidate_pool_size": max(1, int(candidate_pool_size)),
             "min_abs_change_pct": float(min_abs_change_pct),
             "max_abs_change_pct": float(max_abs_change_pct),
+            "required_kline_interval": to_binance_kline_interval(required_kline_interval),
+            "required_kline_count": max(0, safe_int(required_kline_count, 0)),
         },
         "selection": selection,
     }
@@ -343,6 +478,7 @@ def screen_active_tradfi_symbol(
 __all__ = [
     "BinanceActiveMarketDataClient",
     "NoActiveCandidateError",
+    "build_required_kline_lookup",
     "build_usdt_tradfi_perpetual_universe",
     "build_usdt_perpetual_universe",
     "is_tradfi_symbol_info",

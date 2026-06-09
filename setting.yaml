@@ -7,10 +7,10 @@ cycle_interval_seconds: 60
 # from that slot's last LLM decision anchor.
 trigger_pct_usdt: 1.0
 
-# Prompt input: 168 recent 1h close prices, with the newest value aligned
+# Prompt input: 672 recent 1h close prices, with the newest value aligned
 # to the live reference price.
 ai_prompt_timeframe: 1h
-ai_prompt_candle_count: 168
+ai_prompt_candle_count: 672
 
 # DeepSeek V4 Flash via https://api.deepseek.com/chat/completions
 deepseek_model: deepseek-v4-flash
@@ -34,6 +34,7 @@ passive_symbols:
 # active1 uses crypto USDT perpetuals near 4%.
 # active2 uses TradFi USDT perpetuals with abs(24h change %) between 3% and 5%,
 # ranked by closeness to 4%, then selected by highest quote volume from the pool.
+# Active candidates must also have at least ai_prompt_candle_count candles on ai_prompt_timeframe.
 active_targets:
   - 4.0
   - 4.0

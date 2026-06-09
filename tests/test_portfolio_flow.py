@@ -15,7 +15,7 @@ def _config():
         "capital_usage_ratio": 0.99,
         "rebalance_threshold_pct": 0.03,
         "ai_prompt_timeframe": "1h",
-        "ai_prompt_candle_count": 168,
+        "ai_prompt_candle_count": 672,
         "deepseek_model": "deepseek-v4-flash",
         "deepseek_reasoning_effort": "max",
         "deepseek_max_tokens": 8192,
@@ -110,6 +110,8 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertEqual(mocked_standard.call_args.kwargs["target_abs_change_pct"], 4.0)
         self.assertEqual(mocked_standard.call_args.kwargs["min_abs_change_pct"], 3.0)
         self.assertEqual(mocked_standard.call_args.kwargs["max_abs_change_pct"], 5.0)
+        self.assertEqual(mocked_standard.call_args.kwargs["required_kline_interval"], "1h")
+        self.assertEqual(mocked_standard.call_args.kwargs["required_kline_count"], 672)
 
     def test_active2_candidate_screening_uses_tradfi_screener(self):
         with patch(
@@ -131,6 +133,8 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertEqual(mocked_tradfi.call_args.kwargs["target_abs_change_pct"], 4.0)
         self.assertEqual(mocked_tradfi.call_args.kwargs["min_abs_change_pct"], 3.0)
         self.assertEqual(mocked_tradfi.call_args.kwargs["max_abs_change_pct"], 5.0)
+        self.assertEqual(mocked_tradfi.call_args.kwargs["required_kline_interval"], "1h")
+        self.assertEqual(mocked_tradfi.call_args.kwargs["required_kline_count"], 672)
 
     def test_post_trade_direction_mismatch_is_closed_and_marked_failed(self):
         with patch(
@@ -384,6 +388,43 @@ class PortfolioFlowTests(unittest.TestCase):
 
         self.assertFalse(result["success"])
         self.assertEqual(result["action"], "screener_selection_failed")
+        self.assertIsNone(active_symbol)
+        self.assertEqual(updated_state, slot_state)
+
+    def test_active_without_qualified_kline_candidate_waits_quietly(self):
+        slot = _active_slot()
+        slot_state = {
+            "slot_id": "active_1",
+            "kind": "active",
+            "symbol": None,
+        }
+
+        def fail_cycle_dir():
+            raise AssertionError("waiting for active candidate should not create db artifact")
+
+        with patch(
+            "src.strategy.portfolio_strategy._screen_active_candidate",
+            side_effect=portfolio_strategy.NoActiveCandidateError(
+                "active screener found no candidate with abs(24h change) between 3.0% and 5.0% and at least 672 1h klines"
+            ),
+        ):
+            result, updated_state, active_symbol = portfolio_strategy._run_active_slot(
+                slot=slot,
+                slot_state=slot_state,
+                config=_config(),
+                api_key="key",
+                api_secret="secret",
+                account_overview={"equity": 1000.0, "available_balance": 500.0},
+                open_positions=[],
+                reserved_symbols=set(),
+                as_of_ms=1,
+                cycle_dir_factory=fail_cycle_dir,
+                notification_callback=None,
+            )
+
+        self.assertTrue(result["success"])
+        self.assertFalse(result["ai_triggered"])
+        self.assertEqual(result["action"], "waiting_for_active_candidate")
         self.assertIsNone(active_symbol)
         self.assertEqual(updated_state, slot_state)
 

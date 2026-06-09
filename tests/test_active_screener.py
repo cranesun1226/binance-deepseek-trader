@@ -52,6 +52,63 @@ class ActiveScreenerTests(unittest.TestCase):
 
         self.assertEqual(selection["symbol"], "SHORTUSDT")
 
+    def test_kline_lookup_filters_candidates_before_pool_selection(self):
+        tickers = [
+            {"symbol": "NEWUSDT", "priceChangePercent": "4.0", "lastPrice": "1", "quoteVolume": "9999"},
+            {"symbol": "OLD1USDT", "priceChangePercent": "4.01", "lastPrice": "1", "quoteVolume": "100"},
+            {"symbol": "OLD2USDT", "priceChangePercent": "4.02", "lastPrice": "1", "quoteVolume": "200"},
+        ]
+
+        def kline_lookup(symbol):
+            return {
+                "available": symbol != "NEWUSDT",
+                "interval": "1h",
+                "required_count": 672,
+                "available_count": 100 if symbol == "NEWUSDT" else 672,
+            }
+
+        selection = select_active_symbol_from_tickers(
+            tickers,
+            universe={row["symbol"] for row in tickers},
+            target_abs_change_pct=4.0,
+            excluded_symbols=[],
+            candidate_pool_size=2,
+            min_abs_change_pct=3.0,
+            max_abs_change_pct=5.0,
+            kline_availability_lookup=kline_lookup,
+        )
+
+        self.assertEqual(selection["symbol"], "OLD2USDT")
+        self.assertEqual([row["symbol"] for row in selection["top_candidates"]], ["OLD1USDT", "OLD2USDT"])
+        self.assertEqual(selection["kline_validation_checked_count"], 3)
+        self.assertEqual(selection["kline_rejected_count"], 1)
+        self.assertEqual(selection["kline_validation_failures"][0]["symbol"], "NEWUSDT")
+
+    def test_kline_lookup_can_leave_active_screener_without_candidate(self):
+        tickers = [
+            {"symbol": "NEW1USDT", "priceChangePercent": "4.0", "lastPrice": "1", "quoteVolume": "100"},
+            {"symbol": "NEW2USDT", "priceChangePercent": "-4.0", "lastPrice": "1", "quoteVolume": "200"},
+        ]
+
+        selection = select_active_symbol_from_tickers(
+            tickers,
+            universe={row["symbol"] for row in tickers},
+            target_abs_change_pct=4.0,
+            excluded_symbols=[],
+            candidate_pool_size=10,
+            kline_availability_lookup=lambda _symbol: {
+                "available": False,
+                "interval": "1h",
+                "required_count": 672,
+                "available_count": 120,
+            },
+        )
+
+        self.assertIsNone(selection["symbol"])
+        self.assertEqual(selection["top_candidates"], [])
+        self.assertEqual(selection["kline_validation_checked_count"], 2)
+        self.assertEqual(selection["kline_rejected_count"], 2)
+
     def test_universe_keeps_trading_usdt_perpetuals_only(self):
         exchange_info = {
             "symbols": [
