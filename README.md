@@ -48,7 +48,7 @@ This project runs a 1x-leverage portfolio loop across four fixed passive markets
 
 ### LLM 프롬프트
 
-LLM에는 한 번에 한 종목의 `symbol`, 현재 `reference_price`, 그리고 1시간봉 종가 72개만 전달됩니다. 최신 종가는 판단 시점의 실시간 기준가로 보정됩니다. DeepSeek API에는 `response_format: {"type":"json_object"}`를 요청하고, 런타임이 `{"decision":"LONG","reason":"..."}` 또는 `{"decision":"SHORT","reason":"..."}`만 통과시킵니다. `reason`은 영어 200단어 이하의 판단 근거 요약이며, Telegram에는 raw reasoning 대신 이 값이 표시됩니다.
+LLM에는 한 번에 한 종목의 `symbol`, 현재 `reference_price`, 그리고 1시간봉 종가 168개만 전달됩니다. 최신 종가는 판단 시점의 실시간 기준가로 보정됩니다. DeepSeek API에는 `response_format: {"type":"json_object"}`를 요청하고, 런타임이 `{"decision":"LONG","reason":"..."}` 또는 `{"decision":"SHORT","reason":"..."}`만 통과시킵니다. `reason`은 영어 200단어 이하의 판단 근거 요약이며, Telegram에는 raw reasoning 대신 이 값이 표시됩니다.
 
 ### 설치
 
@@ -82,7 +82,7 @@ TELEGRAM_CHAT_ID="..."
 cycle_interval_seconds: 60
 trigger_pct_usdt: 1.0
 ai_prompt_timeframe: 1h
-ai_prompt_candle_count: 72
+ai_prompt_candle_count: 168
 deepseek_model: deepseek-v4-flash
 deepseek_reasoning_effort: max
 deepseek_max_tokens: 8192
@@ -255,7 +255,7 @@ The project has passed a full live-data dry run for all six slots, including Dee
 
 ### LLM Prompt
 
-The LLM receives only one symbol at a time: `symbol`, live `reference_price`, and 72 recent 1h close prices. The newest close is aligned to the live reference price at decision time. The API request uses `response_format: {"type":"json_object"}`, and the runtime accepts only `{"decision":"LONG","reason":"..."}` or `{"decision":"SHORT","reason":"..."}`. The `reason` value must be an English rationale summary of 200 words or fewer, and Telegram displays it instead of raw reasoning output.
+The LLM receives only one symbol at a time: `symbol`, live `reference_price`, and 168 recent 1h close prices. The newest close is aligned to the live reference price at decision time. The API request uses `response_format: {"type":"json_object"}`, and the runtime accepts only `{"decision":"LONG","reason":"..."}` or `{"decision":"SHORT","reason":"..."}`. The `reason` value must be an English rationale summary of 200 words or fewer, and Telegram displays it instead of raw reasoning output.
 
 ### Installation
 
@@ -289,7 +289,7 @@ Runtime settings live in [setting.yaml](./setting.yaml).
 cycle_interval_seconds: 60
 trigger_pct_usdt: 1.0
 ai_prompt_timeframe: 1h
-ai_prompt_candle_count: 72
+ai_prompt_candle_count: 168
 deepseek_model: deepseek-v4-flash
 deepseek_reasoning_effort: max
 deepseek_max_tokens: 8192

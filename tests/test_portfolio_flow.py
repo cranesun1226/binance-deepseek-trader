@@ -15,7 +15,7 @@ def _config():
         "capital_usage_ratio": 0.99,
         "rebalance_threshold_pct": 0.03,
         "ai_prompt_timeframe": "1h",
-        "ai_prompt_candle_count": 72,
+        "ai_prompt_candle_count": 168,
         "deepseek_model": "deepseek-v4-flash",
         "deepseek_reasoning_effort": "max",
         "deepseek_max_tokens": 8192,
