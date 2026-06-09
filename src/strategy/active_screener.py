@@ -1,11 +1,11 @@
-"""Active USDT-M perpetual symbol screening by 24h move target."""
+"""Active USDT-M perpetual screening by four-week trend quality."""
 
 from __future__ import annotations
 
 import math
 import time
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Optional, Sequence
+from typing import Any, Dict, Optional, Sequence
 
 try:
     import requests
@@ -22,7 +22,22 @@ from src.infra.logger import format_log_details, get_logger
 from src.strategy.runtime_config import DEFAULT_AI_PROMPT_CANDLE_COUNT, DEFAULT_AI_PROMPT_TIMEFRAME
 
 logger = get_logger("active_screener")
-KLINE_VALIDATION_FAILURE_LOG_LIMIT = 20
+
+TREND_CANDIDATE_REPORT_LIMIT = 10
+TREND_REJECTION_LOG_LIMIT = 20
+TREND_STRENGTH_CAP = 100.0
+EPSILON = 1e-12
+
+TREND_SCORE_WEIGHTS: dict[str, float] = {
+    "trend_strength": 0.22,
+    "linearity": 0.18,
+    "efficiency": 0.18,
+    "directional_consistency": 0.15,
+    "weekly_consistency": 0.12,
+    "daily_consistency": 0.07,
+    "adverse_score": 0.05,
+    "trend_magnitude": 0.03,
+}
 
 
 class NoActiveCandidateError(RuntimeError):
@@ -87,10 +102,6 @@ class BinanceActiveMarketDataClient:
         data = self._json("/fapi/v1/exchangeInfo")
         return data if isinstance(data, dict) else {}
 
-    def ticker_24hr(self) -> list[Dict[str, Any]]:
-        data = self._json("/fapi/v1/ticker/24hr")
-        return data if isinstance(data, list) else []
-
     def klines(self, symbol: str, interval: Any, limit: int) -> list[Any]:
         normalized_symbol = str(symbol or "").strip().upper()
         if not normalized_symbol:
@@ -106,61 +117,14 @@ class BinanceActiveMarketDataClient:
         return data if isinstance(data, list) else []
 
 
-def build_required_kline_lookup(
-    client: BinanceActiveMarketDataClient,
-    *,
-    interval: Any,
-    required_count: int,
-) -> Optional[Callable[[str], Dict[str, Any]]]:
-    normalized_required_count = max(0, safe_int(required_count, 0))
-    if normalized_required_count <= 0:
-        return None
-    normalized_interval = to_binance_kline_interval(interval)
-    cache: dict[str, Dict[str, Any]] = {}
-
-    def _lookup(symbol: str) -> Dict[str, Any]:
-        normalized_symbol = str(symbol or "").strip().upper()
-        if not normalized_symbol:
-            return {
-                "available": False,
-                "interval": normalized_interval,
-                "required_count": normalized_required_count,
-                "available_count": 0,
-                "error": "symbol is required",
-            }
-        if normalized_symbol in cache:
-            return dict(cache[normalized_symbol])
-        try:
-            klines = client.klines(normalized_symbol, normalized_interval, normalized_required_count)
-            available_count = len(klines)
-            validation = {
-                "available": available_count >= normalized_required_count,
-                "interval": normalized_interval,
-                "required_count": normalized_required_count,
-                "available_count": available_count,
-            }
-        except Exception as exc:
-            validation = {
-                "available": False,
-                "interval": normalized_interval,
-                "required_count": normalized_required_count,
-                "available_count": 0,
-                "error": str(exc),
-            }
-            logger.warning(
-                "Active candidate kline validation failed for %s | %s",
-                normalized_symbol,
-                format_log_details(validation),
-            )
-        if not bool(validation.get("available")):
-            logger.info(
-                "Active candidate skipped due to insufficient klines | %s",
-                format_log_details({"symbol": normalized_symbol, **validation}),
-            )
-        cache[normalized_symbol] = dict(validation)
-        return dict(validation)
-
-    return _lookup
+def is_tradfi_symbol_info(row: Dict[str, Any]) -> bool:
+    contract_type = str(row.get("contractType") or "").strip().upper()
+    if contract_type == "TRADIFI_PERPETUAL":
+        return True
+    subtypes = row.get("underlyingSubType")
+    if isinstance(subtypes, (list, tuple, set)):
+        return any(str(subtype or "").strip().lower() == "tradfi" for subtype in subtypes)
+    return str(subtypes or "").strip().lower() == "tradfi"
 
 
 def build_usdt_perpetual_universe(exchange_info: Dict[str, Any], quote: str = "USDT") -> set[str]:
@@ -178,18 +142,10 @@ def build_usdt_perpetual_universe(exchange_info: Dict[str, Any], quote: str = "U
             continue
         if str(row.get("quoteAsset") or "").upper() != normalized_quote:
             continue
+        if is_tradfi_symbol_info(row):
+            continue
         universe.add(symbol)
     return universe
-
-
-def is_tradfi_symbol_info(row: Dict[str, Any]) -> bool:
-    contract_type = str(row.get("contractType") or "").strip().upper()
-    if contract_type == "TRADIFI_PERPETUAL":
-        return True
-    subtypes = row.get("underlyingSubType")
-    if isinstance(subtypes, (list, tuple, set)):
-        return any(str(subtype or "").strip().lower() == "tradfi" for subtype in subtypes)
-    return str(subtypes or "").strip().lower() == "tradfi"
 
 
 def build_usdt_tradfi_perpetual_universe(exchange_info: Dict[str, Any], quote: str = "USDT") -> set[str]:
@@ -211,114 +167,275 @@ def build_usdt_tradfi_perpetual_universe(exchange_info: Dict[str, Any], quote: s
     return universe
 
 
-def normalize_ticker_row(symbol: str, ticker: Dict[str, Any], *, target_abs_change_pct: float) -> Dict[str, Any]:
-    price_change_pct = safe_float(ticker.get("priceChangePercent"))
-    abs_change = abs(price_change_pct)
+def _normalize_excluded_symbols(excluded_symbols: Sequence[str]) -> set[str]:
+    return {str(symbol or "").strip().upper() for symbol in excluded_symbols if str(symbol or "").strip()}
+
+
+def extract_kline_close_prices(klines: Sequence[Any], *, required_count: int) -> list[float]:
+    required = max(1, safe_int(required_count, DEFAULT_AI_PROMPT_CANDLE_COUNT))
+    closes: list[float] = []
+    for row in klines or []:
+        if isinstance(row, dict):
+            raw_close = row.get("close")
+        elif isinstance(row, (list, tuple)) and len(row) > 4:
+            raw_close = row[4]
+        else:
+            raw_close = None
+        close = safe_float(raw_close)
+        if close <= 0.0:
+            raise ValueError("kline close prices must be positive")
+        closes.append(close)
+    if len(closes) < required:
+        raise ValueError(f"not enough klines: have={len(closes)} need={required}")
+    return closes[-required:]
+
+
+def _segment_direction_share(log_prices: Sequence[float], *, segments: int, direction_multiplier: float) -> float:
+    segment_count = max(1, int(segments))
+    if len(log_prices) < 2:
+        return 0.0
+    step = max(1, len(log_prices) // segment_count)
+    aligned = 0
+    valid = 0
+    for index in range(segment_count):
+        start = index * step
+        if start >= len(log_prices) - 1:
+            break
+        end = min((index + 1) * step, len(log_prices) - 1)
+        if index == segment_count - 1:
+            end = len(log_prices) - 1
+        if end <= start:
+            continue
+        valid += 1
+        if direction_multiplier * (log_prices[end] - log_prices[start]) > 0.0:
+            aligned += 1
+    return aligned / valid if valid else 0.0
+
+
+def calculate_trend_metrics(symbol: str, close_prices: Sequence[Any]) -> Dict[str, Any]:
+    normalized_symbol = str(symbol or "").strip().upper()
+    if not normalized_symbol:
+        raise ValueError("symbol is required")
+    prices = [safe_float(value) for value in close_prices or []]
+    if len(prices) < 3:
+        raise ValueError("at least 3 close prices are required")
+    if any(price <= 0.0 for price in prices):
+        raise ValueError("close prices must be positive")
+
+    log_prices = [math.log(price) for price in prices]
+    count = len(log_prices)
+    time_mean = (count - 1) / 2.0
+    price_mean = sum(log_prices) / count
+    centered_time = [index - time_mean for index in range(count)]
+    sxx = sum(value * value for value in centered_time)
+    if sxx <= EPSILON:
+        raise ValueError("not enough time variance to fit trend")
+
+    slope = sum(centered_time[index] * (log_prices[index] - price_mean) for index in range(count)) / sxx
+    if abs(slope) <= EPSILON:
+        raise ValueError("trend slope is flat")
+    direction_multiplier = 1.0 if slope > 0.0 else -1.0
+    trend_direction = "LONG" if slope > 0.0 else "SHORT"
+    intercept = price_mean - slope * time_mean
+
+    residuals = [log_prices[index] - (intercept + slope * index) for index in range(count)]
+    sse = sum(value * value for value in residuals)
+    sst = sum((value - price_mean) ** 2 for value in log_prices)
+    linearity = 0.0 if sst <= EPSILON else max(0.0, min(1.0, 1.0 - (sse / sst)))
+    if count > 2 and sse > EPSILON:
+        slope_stderr = math.sqrt((sse / (count - 2)) / sxx)
+        trend_strength = min(TREND_STRENGTH_CAP, abs(slope) / slope_stderr) if slope_stderr > EPSILON else TREND_STRENGTH_CAP
+    else:
+        trend_strength = TREND_STRENGTH_CAP
+
+    returns = [log_prices[index] - log_prices[index - 1] for index in range(1, count)]
+    total_path = sum(abs(value) for value in returns)
+    if total_path <= EPSILON:
+        raise ValueError("price path is flat")
+    net_log_return = log_prices[-1] - log_prices[0]
+    directional_net_return = direction_multiplier * net_log_return
+    if directional_net_return <= 0.0:
+        raise ValueError("endpoint return is not aligned with trend slope")
+
+    same_direction_path = sum(max(direction_multiplier * value, 0.0) for value in returns)
+    directional_consistency = same_direction_path / total_path
+    efficiency = abs(net_log_return) / total_path
+
+    transformed_path = [direction_multiplier * (value - log_prices[0]) for value in log_prices]
+    running_peak = transformed_path[0]
+    max_adverse_excursion = 0.0
+    for value in transformed_path:
+        running_peak = max(running_peak, value)
+        max_adverse_excursion = max(max_adverse_excursion, running_peak - value)
+    adverse_ratio = max_adverse_excursion / max(directional_net_return, EPSILON)
+    adverse_score = 1.0 / (1.0 + adverse_ratio)
+
+    weekly_consistency = _segment_direction_share(log_prices, segments=4, direction_multiplier=direction_multiplier)
+    daily_consistency = _segment_direction_share(log_prices, segments=28, direction_multiplier=direction_multiplier)
+    trend_log_return = slope * (count - 1)
+    realized_volatility = 0.0
+    if len(returns) > 1:
+        return_mean = sum(returns) / len(returns)
+        realized_volatility = math.sqrt(
+            sum((value - return_mean) ** 2 for value in returns) / (len(returns) - 1)
+        ) * math.sqrt(len(returns))
+
     return {
-        "symbol": symbol,
-        "price_change_pct_24h": price_change_pct,
-        "abs_price_change_pct_24h": abs_change,
-        "target_abs_change_pct": float(target_abs_change_pct),
-        "target_distance_pct": abs(abs_change - float(target_abs_change_pct)),
-        "last_price": safe_float(ticker.get("lastPrice")),
-        "quote_volume_24h": safe_float(ticker.get("quoteVolume")),
-        "trades_24h": safe_int(ticker.get("count")),
+        "symbol": normalized_symbol,
+        "trend_direction": trend_direction,
+        "close_count": count,
+        "first_close": prices[0],
+        "last_close": prices[-1],
+        "net_return_pct": math.expm1(net_log_return) * 100.0,
+        "trend_return_pct": math.expm1(trend_log_return) * 100.0,
+        "trend_magnitude": abs(trend_log_return),
+        "trend_slope": slope,
+        "trend_strength": trend_strength,
+        "linearity": linearity,
+        "efficiency": efficiency,
+        "directional_consistency": directional_consistency,
+        "weekly_consistency": weekly_consistency,
+        "daily_consistency": daily_consistency,
+        "max_adverse_excursion": max_adverse_excursion,
+        "adverse_ratio": adverse_ratio,
+        "adverse_score": adverse_score,
+        "realized_volatility": realized_volatility,
     }
 
 
-def select_active_symbol_from_tickers(
-    tickers: Sequence[Dict[str, Any]],
-    *,
-    universe: set[str],
-    target_abs_change_pct: float,
-    excluded_symbols: Sequence[str],
-    candidate_pool_size: int = 10,
-    min_abs_change_pct: Optional[float] = None,
-    max_abs_change_pct: Optional[float] = None,
-    kline_availability_lookup: Optional[Callable[[str], Dict[str, Any]]] = None,
-) -> Dict[str, Any]:
-    excluded = {str(symbol or "").strip().upper() for symbol in excluded_symbols if str(symbol or "").strip()}
-    rows: list[Dict[str, Any]] = []
-    for ticker in tickers:
-        if not isinstance(ticker, dict):
-            continue
-        symbol = str(ticker.get("symbol") or "").strip().upper()
-        if not symbol or symbol not in universe or symbol in excluded:
-            continue
-        row = normalize_ticker_row(symbol, ticker, target_abs_change_pct=target_abs_change_pct)
-        if row["last_price"] <= 0.0 or row["quote_volume_24h"] <= 0.0:
-            continue
-        abs_change = safe_float(row.get("abs_price_change_pct_24h"))
-        if min_abs_change_pct is not None and abs_change < float(min_abs_change_pct):
-            continue
-        if max_abs_change_pct is not None and abs_change > float(max_abs_change_pct):
-            continue
-        rows.append(row)
+def _percentile_ranks(rows: Sequence[Dict[str, Any]], metric_name: str) -> list[float]:
+    if not rows:
+        return []
+    if len(rows) == 1:
+        return [1.0]
+    indexed_values = sorted(
+        (safe_float(row.get(metric_name)), index)
+        for index, row in enumerate(rows)
+    )
+    ranks = [0.0] * len(rows)
+    position = 0
+    denominator = len(rows) - 1
+    while position < len(indexed_values):
+        end = position
+        value = indexed_values[position][0]
+        while end + 1 < len(indexed_values) and indexed_values[end + 1][0] == value:
+            end += 1
+        rank = ((position + end) / 2.0) / denominator
+        for grouped_index in range(position, end + 1):
+            ranks[indexed_values[grouped_index][1]] = rank
+        position = end + 1
+    return ranks
 
-    rows.sort(
+
+def score_trend_candidates(rows: Sequence[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    scored = [dict(row) for row in rows]
+    if not scored:
+        return []
+    metric_ranks = {metric_name: _percentile_ranks(scored, metric_name) for metric_name in TREND_SCORE_WEIGHTS}
+    for index, row in enumerate(scored):
+        components = {
+            metric_name: metric_ranks[metric_name][index]
+            for metric_name in TREND_SCORE_WEIGHTS
+        }
+        score = sum(TREND_SCORE_WEIGHTS[metric_name] * components[metric_name] for metric_name in TREND_SCORE_WEIGHTS)
+        row["trend_score"] = score
+        row["score_components"] = components
+        row["score_weights"] = dict(TREND_SCORE_WEIGHTS)
+    scored.sort(
         key=lambda row: (
-            safe_float(row.get("target_distance_pct"), float("inf")),
-            -safe_float(row.get("quote_volume_24h")),
+            -safe_float(row.get("trend_score")),
+            -safe_float(row.get("trend_strength")),
+            -safe_float(row.get("linearity")),
+            -safe_float(row.get("efficiency")),
+            -safe_float(row.get("trend_magnitude")),
             str(row.get("symbol") or ""),
         )
     )
-    pool_size = max(1, int(candidate_pool_size))
-    top_candidates: list[Dict[str, Any]] = []
-    kline_validation_checked_count = 0
-    kline_validation_failures: list[Dict[str, Any]] = []
+    return scored
 
-    for row in rows:
-        if kline_availability_lookup is not None:
-            symbol = str(row.get("symbol") or "").strip().upper()
-            kline_validation_checked_count += 1
-            try:
-                validation = kline_availability_lookup(symbol)
-            except Exception as exc:
-                validation = {"available": False, "error": str(exc)}
-            validation_payload = dict(validation) if isinstance(validation, dict) else {"available": False}
-            row["kline_validation"] = validation_payload
-            if not bool(validation_payload.get("available")):
-                if len(kline_validation_failures) < KLINE_VALIDATION_FAILURE_LOG_LIMIT:
-                    kline_validation_failures.append({"symbol": symbol, **validation_payload})
-                continue
-        top_candidates.append(row)
-        if len(top_candidates) >= pool_size:
-            break
 
-    selected = max(
-        top_candidates,
-        key=lambda row: (
-            safe_float(row.get("quote_volume_24h")),
-            -safe_float(row.get("target_distance_pct"), float("inf")),
-            str(row.get("symbol") or ""),
-        ),
-        default=None,
-    )
+def select_active_symbol_from_trend_candidates(
+    candidates: Sequence[Dict[str, Any]],
+    *,
+    excluded_symbols: Sequence[str],
+    report_limit: int = TREND_CANDIDATE_REPORT_LIMIT,
+) -> Dict[str, Any]:
+    excluded = _normalize_excluded_symbols(excluded_symbols)
+    eligible = [
+        dict(candidate)
+        for candidate in candidates
+        if str(candidate.get("symbol") or "").strip().upper() and str(candidate.get("symbol") or "").strip().upper() not in excluded
+    ]
+    scored = score_trend_candidates(eligible)
+    selected = scored[0] if scored else None
     return {
         "symbol": str(selected.get("symbol") or "").upper() if selected else None,
         "selected": selected,
-        "top_candidates": top_candidates,
-        "candidate_count": len(rows),
-        "kline_validation_checked_count": kline_validation_checked_count,
-        "kline_rejected_count": kline_validation_checked_count - len(top_candidates)
-        if kline_availability_lookup is not None
-        else 0,
-        "kline_validation_failures": kline_validation_failures,
-        "target_abs_change_pct": float(target_abs_change_pct),
-        "min_abs_change_pct": min_abs_change_pct,
-        "max_abs_change_pct": max_abs_change_pct,
+        "top_candidates": scored[: max(1, int(report_limit))],
+        "candidate_count": len(scored),
         "excluded_symbols": sorted(excluded),
     }
 
 
+def _build_trend_candidate(symbol: str, klines: Sequence[Any], *, required_count: int) -> Dict[str, Any]:
+    close_prices = extract_kline_close_prices(klines, required_count=required_count)
+    return calculate_trend_metrics(symbol, close_prices)
+
+
+def _screen_active_universe(
+    *,
+    screening_mode: str,
+    universe: set[str],
+    client: BinanceActiveMarketDataClient,
+    excluded_symbols: Sequence[str],
+    required_kline_interval: Any,
+    required_kline_count: int,
+) -> Dict[str, Any]:
+    normalized_interval = to_binance_kline_interval(required_kline_interval)
+    normalized_count = max(1, safe_int(required_kline_count, DEFAULT_AI_PROMPT_CANDLE_COUNT))
+    excluded = _normalize_excluded_symbols(excluded_symbols)
+    symbols = sorted(symbol for symbol in universe if symbol not in excluded)
+    candidates: list[Dict[str, Any]] = []
+    rejection_samples: list[Dict[str, Any]] = []
+
+    for symbol in symbols:
+        try:
+            klines = client.klines(symbol, normalized_interval, normalized_count)
+            candidates.append(_build_trend_candidate(symbol, klines, required_count=normalized_count))
+        except Exception as exc:
+            if len(rejection_samples) < TREND_REJECTION_LOG_LIMIT:
+                rejection_samples.append({"symbol": symbol, "error": str(exc)})
+            logger.info(
+                "Active trend candidate skipped | %s",
+                format_log_details(
+                    {
+                        "symbol": symbol,
+                        "screening_mode": screening_mode,
+                        "required_kline_interval": normalized_interval,
+                        "required_kline_count": normalized_count,
+                        "error": str(exc),
+                    }
+                ),
+            )
+
+    selection = select_active_symbol_from_trend_candidates(candidates, excluded_symbols=excluded)
+    selection["screened_symbols"] = len(symbols)
+    selection["rejected_count"] = len(symbols) - len(candidates)
+    selection["rejection_samples"] = rejection_samples
+    return selection
+
+
+def _no_candidate_message(screening_mode: str, required_kline_interval: Any, required_kline_count: int) -> str:
+    return (
+        f"active {screening_mode} trend screener found no candidate with at least "
+        f"{required_kline_count} {to_binance_kline_interval(required_kline_interval)} valid close-price klines"
+    )
+
+
 def screen_active_symbol(
     *,
-    target_abs_change_pct: float,
     excluded_symbols: Sequence[str],
     quote: str = "USDT",
-    candidate_pool_size: int = 10,
-    min_abs_change_pct: Optional[float] = None,
-    max_abs_change_pct: Optional[float] = None,
     timeout: float = 30.0,
     retries: int = 3,
     request_sleep: float = 0.10,
@@ -331,64 +448,38 @@ def screen_active_symbol(
         request_sleep=request_sleep,
     )
     logger.info(
-        "Active symbol screening started | %s",
+        "Active crypto trend screening started | %s",
         format_log_details(
             {
-                "target_abs_change_pct": target_abs_change_pct,
-                "min_abs_change_pct": min_abs_change_pct,
-                "max_abs_change_pct": max_abs_change_pct,
                 "quote": quote,
-                "candidate_pool_size": candidate_pool_size,
                 "required_kline_interval": required_kline_interval,
                 "required_kline_count": required_kline_count,
-                "excluded_symbols": sorted(
-                    {str(symbol or '').strip().upper() for symbol in excluded_symbols if str(symbol or '').strip()}
-                ),
+                "excluded_symbols": sorted(_normalize_excluded_symbols(excluded_symbols)),
             }
         ),
     )
     exchange_info = client.exchange_info()
     universe = build_usdt_perpetual_universe(exchange_info, quote=quote)
-    tickers = client.ticker_24hr()
-    kline_availability_lookup = build_required_kline_lookup(
-        client,
-        interval=required_kline_interval,
-        required_count=safe_int(required_kline_count, 0),
-    )
-    selection = select_active_symbol_from_tickers(
-        tickers,
+    selection = _screen_active_universe(
+        screening_mode="crypto",
         universe=universe,
-        target_abs_change_pct=target_abs_change_pct,
+        client=client,
         excluded_symbols=excluded_symbols,
-        candidate_pool_size=candidate_pool_size,
-        min_abs_change_pct=min_abs_change_pct,
-        max_abs_change_pct=max_abs_change_pct,
-        kline_availability_lookup=kline_availability_lookup,
+        required_kline_interval=required_kline_interval,
+        required_kline_count=required_kline_count,
     )
     if not selection.get("symbol"):
-        kline_requirement = (
-            f" and at least {required_kline_count} {to_binance_kline_interval(required_kline_interval)} klines"
-            if safe_int(required_kline_count, 0) > 0
-            else ""
-        )
-        if min_abs_change_pct is not None or max_abs_change_pct is not None:
-            raise NoActiveCandidateError(
-                f"active screener found no candidate with abs(24h change) between {min_abs_change_pct}% and {max_abs_change_pct}%{kline_requirement}"
-            )
-        raise NoActiveCandidateError(f"active screener did not return a tradable candidate{kline_requirement}")
+        raise NoActiveCandidateError(_no_candidate_message("crypto", required_kline_interval, required_kline_count))
     return {
         "metadata": {
             "captured_at": utc_now_iso(),
             "base_url": client.base_url,
             "quote": str(quote or "USDT").upper(),
-            "screening_mode": "standard",
+            "screening_mode": "crypto",
             "universe_symbols": len(universe),
-            "ticker_count": len(tickers),
-            "candidate_pool_size": max(1, int(candidate_pool_size)),
-            "min_abs_change_pct": min_abs_change_pct,
-            "max_abs_change_pct": max_abs_change_pct,
             "required_kline_interval": to_binance_kline_interval(required_kline_interval),
-            "required_kline_count": max(0, safe_int(required_kline_count, 0)),
+            "required_kline_count": max(1, safe_int(required_kline_count, DEFAULT_AI_PROMPT_CANDLE_COUNT)),
+            "score_weights": dict(TREND_SCORE_WEIGHTS),
         },
         "selection": selection,
     }
@@ -396,12 +487,8 @@ def screen_active_symbol(
 
 def screen_active_tradfi_symbol(
     *,
-    target_abs_change_pct: float,
     excluded_symbols: Sequence[str],
-    min_abs_change_pct: float = 3.0,
-    max_abs_change_pct: float = 5.0,
     quote: str = "USDT",
-    candidate_pool_size: int = 10,
     timeout: float = 30.0,
     retries: int = 3,
     request_sleep: float = 0.10,
@@ -414,49 +501,28 @@ def screen_active_tradfi_symbol(
         request_sleep=request_sleep,
     )
     logger.info(
-        "Active TradFi symbol screening started | %s",
+        "Active TradFi trend screening started | %s",
         format_log_details(
             {
-                "target_abs_change_pct": target_abs_change_pct,
-                "min_abs_change_pct": min_abs_change_pct,
-                "max_abs_change_pct": max_abs_change_pct,
                 "quote": quote,
-                "candidate_pool_size": candidate_pool_size,
                 "required_kline_interval": required_kline_interval,
                 "required_kline_count": required_kline_count,
-                "excluded_symbols": sorted(
-                    {str(symbol or '').strip().upper() for symbol in excluded_symbols if str(symbol or '').strip()}
-                ),
+                "excluded_symbols": sorted(_normalize_excluded_symbols(excluded_symbols)),
             }
         ),
     )
     exchange_info = client.exchange_info()
     universe = build_usdt_tradfi_perpetual_universe(exchange_info, quote=quote)
-    tickers = client.ticker_24hr()
-    kline_availability_lookup = build_required_kline_lookup(
-        client,
-        interval=required_kline_interval,
-        required_count=safe_int(required_kline_count, 0),
-    )
-    selection = select_active_symbol_from_tickers(
-        tickers,
+    selection = _screen_active_universe(
+        screening_mode="tradfi",
         universe=universe,
-        target_abs_change_pct=target_abs_change_pct,
+        client=client,
         excluded_symbols=excluded_symbols,
-        candidate_pool_size=candidate_pool_size,
-        min_abs_change_pct=float(min_abs_change_pct),
-        max_abs_change_pct=float(max_abs_change_pct),
-        kline_availability_lookup=kline_availability_lookup,
+        required_kline_interval=required_kline_interval,
+        required_kline_count=required_kline_count,
     )
     if not selection.get("symbol"):
-        kline_requirement = (
-            f" and at least {required_kline_count} {to_binance_kline_interval(required_kline_interval)} klines"
-            if safe_int(required_kline_count, 0) > 0
-            else ""
-        )
-        raise NoActiveCandidateError(
-            f"active TradFi screener found no candidate with abs(24h change) between {min_abs_change_pct}% and {max_abs_change_pct}%{kline_requirement}"
-        )
+        raise NoActiveCandidateError(_no_candidate_message("tradfi", required_kline_interval, required_kline_count))
     return {
         "metadata": {
             "captured_at": utc_now_iso(),
@@ -464,12 +530,9 @@ def screen_active_tradfi_symbol(
             "quote": str(quote or "USDT").upper(),
             "screening_mode": "tradfi",
             "universe_symbols": len(universe),
-            "ticker_count": len(tickers),
-            "candidate_pool_size": max(1, int(candidate_pool_size)),
-            "min_abs_change_pct": float(min_abs_change_pct),
-            "max_abs_change_pct": float(max_abs_change_pct),
             "required_kline_interval": to_binance_kline_interval(required_kline_interval),
-            "required_kline_count": max(0, safe_int(required_kline_count, 0)),
+            "required_kline_count": max(1, safe_int(required_kline_count, DEFAULT_AI_PROMPT_CANDLE_COUNT)),
+            "score_weights": dict(TREND_SCORE_WEIGHTS),
         },
         "selection": selection,
     }
@@ -478,12 +541,14 @@ def screen_active_tradfi_symbol(
 __all__ = [
     "BinanceActiveMarketDataClient",
     "NoActiveCandidateError",
-    "build_required_kline_lookup",
+    "TREND_SCORE_WEIGHTS",
     "build_usdt_tradfi_perpetual_universe",
     "build_usdt_perpetual_universe",
+    "calculate_trend_metrics",
+    "extract_kline_close_prices",
     "is_tradfi_symbol_info",
-    "normalize_ticker_row",
+    "score_trend_candidates",
     "screen_active_symbol",
     "screen_active_tradfi_symbol",
-    "select_active_symbol_from_tickers",
+    "select_active_symbol_from_trend_candidates",
 ]

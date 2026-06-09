@@ -21,12 +21,6 @@ def _config():
         "deepseek_max_tokens": 8192,
         "deepseek_timeout_seconds": 300.0,
         "passive_symbols": ["CLUSDT", "XAUUSDT", "QQQUSDT", "BTCUSDT"],
-        "active_targets": [4.0, 4.0],
-        "active_candidate_pool_size": 10,
-        "active1_min_abs_change_pct": 3.0,
-        "active1_max_abs_change_pct": 5.0,
-        "active2_tradfi_min_abs_change_pct": 3.0,
-        "active2_tradfi_max_abs_change_pct": 5.0,
         "screener_quote": "USDT",
         "screener_timeout": 30.0,
         "screener_retries": 3,
@@ -40,7 +34,6 @@ def _active_slot():
         label="active1",
         kind="active",
         target_margin_ratio=0.25,
-        active_target_abs_change_pct=4.0,
     )
 
 
@@ -50,7 +43,6 @@ def _active2_slot():
         label="active2",
         kind="active",
         target_margin_ratio=0.25,
-        active_target_abs_change_pct=4.0,
         active_screening_mode="tradfi",
     )
 
@@ -90,14 +82,14 @@ def _short_position(symbol="ETHUSDT"):
 
 
 class PortfolioFlowTests(unittest.TestCase):
-    def test_active1_candidate_screening_uses_standard_screener_with_abs_change_band(self):
+    def test_active1_candidate_screening_uses_crypto_trend_screener(self):
         with patch(
             "src.strategy.portfolio_strategy.screen_active_symbol",
             return_value={
-                "metadata": {"screening_mode": "standard"},
+                "metadata": {"screening_mode": "crypto"},
                 "selection": {"symbol": "ETHUSDT", "selected": {"symbol": "ETHUSDT"}},
             },
-        ) as mocked_standard, patch("src.strategy.portfolio_strategy.screen_active_tradfi_symbol") as mocked_tradfi:
+        ) as mocked_crypto, patch("src.strategy.portfolio_strategy.screen_active_tradfi_symbol") as mocked_tradfi:
             candidate = portfolio_strategy._screen_active_candidate(
                 slot=_active_slot(),
                 config=_config(),
@@ -105,13 +97,11 @@ class PortfolioFlowTests(unittest.TestCase):
             )
 
         self.assertEqual(candidate["symbol"], "ETHUSDT")
-        mocked_standard.assert_called_once()
+        mocked_crypto.assert_called_once()
         mocked_tradfi.assert_not_called()
-        self.assertEqual(mocked_standard.call_args.kwargs["target_abs_change_pct"], 4.0)
-        self.assertEqual(mocked_standard.call_args.kwargs["min_abs_change_pct"], 3.0)
-        self.assertEqual(mocked_standard.call_args.kwargs["max_abs_change_pct"], 5.0)
-        self.assertEqual(mocked_standard.call_args.kwargs["required_kline_interval"], "1h")
-        self.assertEqual(mocked_standard.call_args.kwargs["required_kline_count"], 672)
+        self.assertEqual(mocked_crypto.call_args.kwargs["quote"], "USDT")
+        self.assertEqual(mocked_crypto.call_args.kwargs["required_kline_interval"], "1h")
+        self.assertEqual(mocked_crypto.call_args.kwargs["required_kline_count"], 672)
 
     def test_active2_candidate_screening_uses_tradfi_screener(self):
         with patch(
@@ -120,7 +110,7 @@ class PortfolioFlowTests(unittest.TestCase):
                 "metadata": {"screening_mode": "tradfi"},
                 "selection": {"symbol": "ESUSDT", "selected": {"symbol": "ESUSDT"}},
             },
-        ) as mocked_tradfi, patch("src.strategy.portfolio_strategy.screen_active_symbol") as mocked_standard:
+        ) as mocked_tradfi, patch("src.strategy.portfolio_strategy.screen_active_symbol") as mocked_crypto:
             candidate = portfolio_strategy._screen_active_candidate(
                 slot=_active2_slot(),
                 config=_config(),
@@ -129,10 +119,8 @@ class PortfolioFlowTests(unittest.TestCase):
 
         self.assertEqual(candidate["symbol"], "ESUSDT")
         mocked_tradfi.assert_called_once()
-        mocked_standard.assert_not_called()
-        self.assertEqual(mocked_tradfi.call_args.kwargs["target_abs_change_pct"], 4.0)
-        self.assertEqual(mocked_tradfi.call_args.kwargs["min_abs_change_pct"], 3.0)
-        self.assertEqual(mocked_tradfi.call_args.kwargs["max_abs_change_pct"], 5.0)
+        mocked_crypto.assert_not_called()
+        self.assertEqual(mocked_tradfi.call_args.kwargs["quote"], "USDT")
         self.assertEqual(mocked_tradfi.call_args.kwargs["required_kline_interval"], "1h")
         self.assertEqual(mocked_tradfi.call_args.kwargs["required_kline_count"], 672)
 
@@ -405,7 +393,7 @@ class PortfolioFlowTests(unittest.TestCase):
         with patch(
             "src.strategy.portfolio_strategy._screen_active_candidate",
             side_effect=portfolio_strategy.NoActiveCandidateError(
-                "active screener found no candidate with abs(24h change) between 3.0% and 5.0% and at least 672 1h klines"
+                "active crypto trend screener found no candidate with at least 672 1h valid close-price klines"
             ),
         ):
             result, updated_state, active_symbol = portfolio_strategy._run_active_slot(

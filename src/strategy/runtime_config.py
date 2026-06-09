@@ -30,12 +30,6 @@ DEFAULT_FIXED_LEVERAGE = 1
 DEFAULT_CAPITAL_USAGE_RATIO = 0.99
 DEFAULT_REBALANCE_THRESHOLD_PCT = 0.03
 DEFAULT_PASSIVE_SYMBOLS = ["CLUSDT", "XAUUSDT", "QQQUSDT", "BTCUSDT"]
-DEFAULT_ACTIVE_TARGETS = [4.0, 4.0]
-DEFAULT_ACTIVE_CANDIDATE_POOL_SIZE = 10
-DEFAULT_ACTIVE1_MIN_ABS_CHANGE_PCT = 3.0
-DEFAULT_ACTIVE1_MAX_ABS_CHANGE_PCT = 5.0
-DEFAULT_ACTIVE2_TRADFI_MIN_ABS_CHANGE_PCT = 3.0
-DEFAULT_ACTIVE2_TRADFI_MAX_ABS_CHANGE_PCT = 5.0
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "project_name": "binance-deepseek-trader",
@@ -52,12 +46,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "deepseek_max_tokens": DEFAULT_DEEPSEEK_MAX_TOKENS,
     "deepseek_timeout_seconds": DEFAULT_DEEPSEEK_TIMEOUT_SECONDS,
     "passive_symbols": list(DEFAULT_PASSIVE_SYMBOLS),
-    "active_targets": list(DEFAULT_ACTIVE_TARGETS),
-    "active_candidate_pool_size": DEFAULT_ACTIVE_CANDIDATE_POOL_SIZE,
-    "active1_min_abs_change_pct": DEFAULT_ACTIVE1_MIN_ABS_CHANGE_PCT,
-    "active1_max_abs_change_pct": DEFAULT_ACTIVE1_MAX_ABS_CHANGE_PCT,
-    "active2_tradfi_min_abs_change_pct": DEFAULT_ACTIVE2_TRADFI_MIN_ABS_CHANGE_PCT,
-    "active2_tradfi_max_abs_change_pct": DEFAULT_ACTIVE2_TRADFI_MAX_ABS_CHANGE_PCT,
     "screener_quote": "USDT",
     "screener_timeout": 30.0,
     "screener_retries": 3,

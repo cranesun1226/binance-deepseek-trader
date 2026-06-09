@@ -8,7 +8,6 @@ class PortfolioHelperTests(unittest.TestCase):
     def test_default_config_builds_six_slots_in_priority_order(self):
         config = {
             "passive_symbols": ["CLUSDT", "XAUUSDT", "QQQUSDT", "BTCUSDT"],
-            "active_targets": [4.0, 4.0],
         }
 
         slots = portfolio_strategy._build_portfolio_slots(config)
@@ -23,7 +22,7 @@ class PortfolioHelperTests(unittest.TestCase):
         ])
         self.assertEqual([slot.symbol for slot in slots[:4]], ["CLUSDT", "XAUUSDT", "QQQUSDT", "BTCUSDT"])
         self.assertEqual([slot.target_margin_ratio for slot in slots], [0.125, 0.125, 0.125, 0.125, 0.25, 0.25])
-        self.assertEqual(slots[4].active_screening_mode, "standard")
+        self.assertEqual(slots[4].active_screening_mode, "crypto")
         self.assertEqual(slots[5].active_screening_mode, "tradfi")
 
     def test_deepseek_reasoning_effort_normalization_matches_api_values(self):
@@ -38,7 +37,6 @@ class PortfolioHelperTests(unittest.TestCase):
             label="active1",
             kind="active",
             target_margin_ratio=0.25,
-            active_target_abs_change_pct=4.0,
         )
 
         target = portfolio_strategy._target_notional_usdt(
@@ -254,7 +252,6 @@ class PortfolioHelperTests(unittest.TestCase):
     def test_duplicate_active_state_symbol_is_cleared_for_later_slot(self):
         config = {
             "passive_symbols": ["CLUSDT", "XAUUSDT", "QQQUSDT", "BTCUSDT"],
-            "active_targets": [4.0, 4.0],
         }
         slots = portfolio_strategy._build_portfolio_slots(config)
         state = portfolio_strategy._normalize_portfolio_state(

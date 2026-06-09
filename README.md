@@ -16,8 +16,8 @@ This project runs a 1x-leverage portfolio loop across four fixed passive markets
   - DeepSeek JSON Output 응답을 로컬에서 검증해 `LONG` 또는 `SHORT`만 허용
 - 6개 슬롯 포트폴리오
   - Passive: `CLUSDT`, `XAUUSDT`, `QQQUSDT`, `BTCUSDT`
-  - Active 1: 24시간 변동률 절대값이 4%에 가까운 crypto USDT-M perpetual 후보 10개 중 거래대금 최대 심볼
-  - Active 2: TradFi USDT-M perpetual 중 24시간 변동률 절대값이 3~5%인 후보를 4% 근접순으로 최대 10개 추린 뒤 거래대금 최대 심볼
+  - Active 1: 통합 4주 추세 품질 점수가 가장 높은 crypto USDT-M perpetual
+  - Active 2: 같은 4주 추세 품질 공식으로 평가한 최고점 TradFi USDT-M perpetual
 - 자산 배분
   - Passive 각 12.5%
   - Active 각 25%
@@ -49,6 +49,12 @@ This project runs a 1x-leverage portfolio loop across four fixed passive markets
 ### LLM 프롬프트
 
 LLM에는 한 번에 한 종목의 `symbol`, 현재 `reference_price`, 그리고 1시간봉 종가 672개만 전달됩니다. 최신 종가는 판단 시점의 실시간 기준가로 보정됩니다. DeepSeek API에는 `response_format: {"type":"json_object"}`를 요청하고, 런타임이 `{"decision":"LONG","reason":"..."}` 또는 `{"decision":"SHORT","reason":"..."}`만 통과시킵니다. `reason`은 영어 200단어 이하의 판단 근거 요약이며, Telegram에는 raw reasoning 대신 이 값이 표시됩니다.
+
+### Active 스크리닝
+
+Active 1과 Active 2는 같은 4주 추세 품질 공식으로 평가됩니다. 차이는 유니버스뿐입니다. Active 1은 crypto USDT-M perpetual, Active 2는 TradFi USDT-M perpetual을 대상으로 하며, passive 심볼과 이미 관리 중인 심볼은 제외합니다.
+
+각 후보는 `ai_prompt_timeframe`의 `ai_prompt_candle_count`개 종가를 가져와 로그가격 선형 추세를 계산합니다. 최종 점수는 `trend_strength`, `linearity`, `efficiency`, `directional_consistency`, `weekly_consistency`, `daily_consistency`, `adverse_score`, `trend_magnitude`의 유니버스 내부 percentile rank 가중합입니다.
 
 ### 설치
 
@@ -96,13 +102,8 @@ passive_symbols:
   - XAUUSDT
   - QQQUSDT
   - BTCUSDT
-active_targets:
-  - 4.0
-  - 4.0
-# Active candidates must also have at least ai_prompt_candle_count candles on ai_prompt_timeframe.
-active_candidate_pool_size: 10
-active2_tradfi_min_abs_change_pct: 3.0
-active2_tradfi_max_abs_change_pct: 5.0
+# Active candidates are ranked by the unified 4-week trend score using
+# ai_prompt_candle_count closes on ai_prompt_timeframe.
 screener_quote: USDT
 screener_timeout: 30.0
 screener_retries: 3
@@ -224,8 +225,8 @@ python -m py_compile main.py src/ai/deepseek_trader.py src/strategy/portfolio_st
   - DeepSeek JSON Output is locally validated to accept only `LONG` or `SHORT`
 - Six-slot portfolio
   - Passive: `CLUSDT`, `XAUUSDT`, `QQQUSDT`, `BTCUSDT`
-- Active 1: top-volume crypto USDT-M perpetual among the 10 candidates closest to a 4% absolute 24h move
-- Active 2: top-volume TradFi USDT-M perpetual after filtering to 3-5% absolute 24h move, ranking by closeness to 4%, and capping the pool at 10
+- Active 1: highest-scoring crypto USDT-M perpetual by unified 4-week trend quality
+- Active 2: highest-scoring TradFi USDT-M perpetual by the same 4-week trend quality formula
 - Allocation
   - 12.5% per passive slot
   - 25% per active slot
@@ -257,6 +258,12 @@ The project has passed a full live-data dry run for all six slots, including Dee
 ### LLM Prompt
 
 The LLM receives only one symbol at a time: `symbol`, live `reference_price`, and 672 recent 1h close prices. The newest close is aligned to the live reference price at decision time. The API request uses `response_format: {"type":"json_object"}`, and the runtime accepts only `{"decision":"LONG","reason":"..."}` or `{"decision":"SHORT","reason":"..."}`. The `reason` value must be an English rationale summary of 200 words or fewer, and Telegram displays it instead of raw reasoning output.
+
+### Active Screening
+
+Active 1 and Active 2 use the same four-week trend-quality formula. Only the universe differs. Active 1 screens crypto USDT-M perpetuals, Active 2 screens TradFi USDT-M perpetuals, and passive or already-managed symbols are excluded.
+
+For each candidate, the screener fetches `ai_prompt_candle_count` closes on `ai_prompt_timeframe` and fits a linear trend on log prices. The final score is a weighted sum of universe-local percentile ranks for `trend_strength`, `linearity`, `efficiency`, `directional_consistency`, `weekly_consistency`, `daily_consistency`, `adverse_score`, and `trend_magnitude`.
 
 ### Installation
 
@@ -304,13 +311,8 @@ passive_symbols:
   - XAUUSDT
   - QQQUSDT
   - BTCUSDT
-active_targets:
-  - 4.0
-  - 4.0
-# Active candidates must also have at least ai_prompt_candle_count candles on ai_prompt_timeframe.
-active_candidate_pool_size: 10
-active2_tradfi_min_abs_change_pct: 3.0
-active2_tradfi_max_abs_change_pct: 5.0
+# Active candidates are ranked by the unified 4-week trend score using
+# ai_prompt_candle_count closes on ai_prompt_timeframe.
 screener_quote: USDT
 screener_timeout: 30.0
 screener_retries: 3
