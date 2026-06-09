@@ -386,6 +386,15 @@ class TradingScheduler:
                 close_prices.append(price)
         return close_prices
 
+    def _resolve_close_price_chart_limit(self, payload: Dict[str, Any]) -> int:
+        prompt_candle_count = _safe_int(payload.get("ai_prompt_candle_count"), 0)
+        if prompt_candle_count > 0:
+            return prompt_candle_count
+        values = payload.get("close_prices")
+        if not isinstance(values, (str, bytes)) and isinstance(values, (list, tuple)) and values:
+            return len(values)
+        return 100
+
     def _build_close_price_chart_caption(self, payload: Dict[str, Any], close_prices: Sequence[float]) -> str:
         first_price = float(close_prices[0])
         latest_price = float(close_prices[-1])
@@ -413,7 +422,8 @@ class TradingScheduler:
         return bool(send_telegram_message(message))
 
     def _emit_telegram_close_price_chart(self, payload: Dict[str, Any]) -> bool:
-        close_prices = self._normalize_close_price_series(payload.get("close_prices"), limit=100)
+        chart_limit = self._resolve_close_price_chart_limit(payload)
+        close_prices = self._normalize_close_price_series(payload.get("close_prices"), limit=chart_limit)
         if not close_prices:
             return False
         symbol = str(payload.get("symbol") or "USDT").strip().upper() or "USDT"
@@ -423,7 +433,7 @@ class TradingScheduler:
                 close_prices,
                 symbol=symbol,
                 timeframe=timeframe,
-                limit=100,
+                limit=chart_limit,
             )
             sent = send_telegram_photo(
                 image_bytes,

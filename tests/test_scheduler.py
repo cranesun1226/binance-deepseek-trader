@@ -52,6 +52,29 @@ class SchedulerTests(unittest.TestCase):
         self.assertNotIn("DeepSeek Reasoning", message)
         self.assertNotIn("raw internal reasoning", message)
 
+    def test_close_price_chart_uses_prompt_candle_count(self):
+        scheduler = TradingScheduler()
+        close_prices = [100.0 + float(index) for index in range(168)]
+
+        with patch("src.strategy.scheduler.build_close_price_line_chart_png", return_value=b"png") as mocked_chart, patch(
+            "src.strategy.scheduler.send_telegram_photo", return_value=True
+        ) as mocked_photo:
+            sent = scheduler._emit_telegram_close_price_chart(
+                {
+                    "symbol": "BTCUSDT",
+                    "decision": "LONG",
+                    "ai_prompt_timeframe": "1h",
+                    "ai_prompt_candle_count": 168,
+                    "close_prices": close_prices,
+                }
+            )
+
+        self.assertTrue(sent)
+        mocked_chart.assert_called_once()
+        self.assertEqual(len(mocked_chart.call_args.args[0]), 168)
+        self.assertEqual(mocked_chart.call_args.kwargs["limit"], 168)
+        self.assertIn("<b>Count:</b> 168", mocked_photo.call_args.kwargs["caption"])
+
 
 if __name__ == "__main__":
     unittest.main()
