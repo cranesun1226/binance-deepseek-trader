@@ -29,6 +29,8 @@ TREND_STRENGTH_CAP = 100.0
 HOURLY_CANDLES_PER_DAY = 24
 HOURLY_CANDLES_PER_WEEK = HOURLY_CANDLES_PER_DAY * 7
 EPSILON = 1e-12
+RECENT_KLINE_RANGE_LOOKBACK = 2
+RECENT_KLINE_RANGE_CHANGE_LIMIT = 0.04
 
 TREND_SCORE_WEIGHTS: dict[str, float] = {
     "trend_strength": 0.22,
@@ -190,6 +192,65 @@ def extract_kline_close_prices(klines: Sequence[Any], *, required_count: int) ->
     if len(closes) < required:
         raise ValueError(f"not enough klines: have={len(closes)} need={required}")
     return closes[-required:]
+
+
+def _extract_kline_high_low(row: Any) -> tuple[float, float]:
+    if isinstance(row, dict):
+        raw_high = row.get("high")
+        raw_low = row.get("low")
+    elif isinstance(row, (list, tuple)) and len(row) > 3:
+        raw_high = row[2]
+        raw_low = row[3]
+    else:
+        raw_high = None
+        raw_low = None
+    return safe_float(raw_high), safe_float(raw_low)
+
+
+def extract_recent_kline_range_changes(
+    klines: Sequence[Any],
+    *,
+    lookback: int = RECENT_KLINE_RANGE_LOOKBACK,
+) -> list[float]:
+    lookback_count = max(1, safe_int(lookback, RECENT_KLINE_RANGE_LOOKBACK))
+    rows = list(klines or [])
+    if len(rows) < lookback_count:
+        raise ValueError(f"not enough recent klines for range filter: have={len(rows)} need={lookback_count}")
+
+    changes: list[float] = []
+    for row in rows[-lookback_count:]:
+        high, low = _extract_kline_high_low(row)
+        if high <= 0.0 or low <= 0.0:
+            raise ValueError("recent kline high/low must be positive")
+        if high < low:
+            raise ValueError("recent kline high must be greater than or equal to low")
+        midpoint = (high + low) / 2.0
+        if midpoint <= EPSILON:
+            raise ValueError("recent kline midpoint must be positive")
+        changes.append((high - low) / midpoint)
+    return changes
+
+
+def validate_recent_kline_range_filter(
+    klines: Sequence[Any],
+    *,
+    limit: float = RECENT_KLINE_RANGE_CHANGE_LIMIT,
+    lookback: int = RECENT_KLINE_RANGE_LOOKBACK,
+) -> Dict[str, Any]:
+    safe_limit = safe_float(limit, RECENT_KLINE_RANGE_CHANGE_LIMIT)
+    if safe_limit <= 0.0:
+        safe_limit = RECENT_KLINE_RANGE_CHANGE_LIMIT
+
+    changes = extract_recent_kline_range_changes(klines, lookback=lookback)
+    max_change = max(changes) if changes else 0.0
+    if max_change > safe_limit + EPSILON:
+        raise ValueError(f"recent kline range change above limit: max_change={max_change:.6f} limit={safe_limit:.6f}")
+    return {
+        "recent_kline_range_lookback": max(1, safe_int(lookback, RECENT_KLINE_RANGE_LOOKBACK)),
+        "recent_kline_range_change_limit": safe_limit,
+        "recent_kline_range_changes": changes,
+        "recent_kline_range_max_change": max_change,
+    }
 
 
 def _segment_direction_share(log_prices: Sequence[float], *, segments: int, direction_multiplier: float) -> float:
@@ -400,8 +461,11 @@ def select_active_symbol_from_trend_candidates(
 
 
 def _build_trend_candidate(symbol: str, klines: Sequence[Any], *, required_count: int) -> Dict[str, Any]:
+    range_filter = validate_recent_kline_range_filter(klines)
     close_prices = extract_kline_close_prices(klines, required_count=required_count)
-    return calculate_trend_metrics(symbol, close_prices)
+    candidate = calculate_trend_metrics(symbol, close_prices)
+    candidate.update(range_filter)
+    return candidate
 
 
 def _screen_active_universe(
@@ -450,7 +514,9 @@ def _screen_active_universe(
 def _no_candidate_message(screening_mode: str, required_kline_interval: Any, required_kline_count: int) -> str:
     return (
         f"active {screening_mode} trend screener found no candidate with at least "
-        f"{required_kline_count} {to_binance_kline_interval(required_kline_interval)} valid close-price klines"
+        f"{required_kline_count} {to_binance_kline_interval(required_kline_interval)} valid close-price klines "
+        f"and recent {RECENT_KLINE_RANGE_LOOKBACK}-kline range change <= "
+        f"{RECENT_KLINE_RANGE_CHANGE_LIMIT * 100.0:.2f}%"
     )
 
 
@@ -502,6 +568,10 @@ def screen_active_symbol(
             "required_kline_interval": to_binance_kline_interval(required_kline_interval),
             "required_kline_count": max(1, safe_int(required_kline_count, DEFAULT_AI_PROMPT_CANDLE_COUNT)),
             "score_weights": dict(TREND_SCORE_WEIGHTS),
+            "recent_kline_range_filter": {
+                "lookback": RECENT_KLINE_RANGE_LOOKBACK,
+                "change_limit": RECENT_KLINE_RANGE_CHANGE_LIMIT,
+            },
         },
         "selection": selection,
     }
@@ -555,6 +625,10 @@ def screen_active_tradfi_symbol(
             "required_kline_interval": to_binance_kline_interval(required_kline_interval),
             "required_kline_count": max(1, safe_int(required_kline_count, DEFAULT_AI_PROMPT_CANDLE_COUNT)),
             "score_weights": dict(TREND_SCORE_WEIGHTS),
+            "recent_kline_range_filter": {
+                "lookback": RECENT_KLINE_RANGE_LOOKBACK,
+                "change_limit": RECENT_KLINE_RANGE_CHANGE_LIMIT,
+            },
         },
         "selection": selection,
     }
@@ -564,13 +638,17 @@ __all__ = [
     "BinanceActiveMarketDataClient",
     "NoActiveCandidateError",
     "TREND_SCORE_WEIGHTS",
+    "RECENT_KLINE_RANGE_CHANGE_LIMIT",
+    "RECENT_KLINE_RANGE_LOOKBACK",
     "build_usdt_tradfi_perpetual_universe",
     "build_usdt_perpetual_universe",
     "calculate_trend_metrics",
     "extract_kline_close_prices",
+    "extract_recent_kline_range_changes",
     "is_tradfi_symbol_info",
     "score_trend_candidates",
     "screen_active_symbol",
     "screen_active_tradfi_symbol",
     "select_active_symbol_from_trend_candidates",
+    "validate_recent_kline_range_filter",
 ]

@@ -2,11 +2,15 @@ import math
 import unittest
 
 from src.strategy.active_screener import (
+    RECENT_KLINE_RANGE_CHANGE_LIMIT,
+    _build_trend_candidate,
     calculate_trend_metrics,
     build_usdt_perpetual_universe,
     build_usdt_tradfi_perpetual_universe,
     extract_kline_close_prices,
+    extract_recent_kline_range_changes,
     select_active_symbol_from_trend_candidates,
+    validate_recent_kline_range_filter,
 )
 
 
@@ -15,7 +19,16 @@ def _trend_prices(*, rate: float, count: int = 168, wiggle: float = 0.0, start: 
 
 
 def _klines_from_closes(closes):
-    return [[0, "0", "0", "0", str(close)] for close in closes]
+    return [
+        [index, str(close), str(close), str(close), str(close)]
+        for index, close in enumerate(closes)
+    ]
+
+
+def _kline(index, *, close, high=None, low=None):
+    high_value = close if high is None else high
+    low_value = close if low is None else low
+    return [index, str(close), str(high_value), str(low_value), str(close)]
 
 
 class ActiveScreenerTests(unittest.TestCase):
@@ -71,6 +84,42 @@ class ActiveScreenerTests(unittest.TestCase):
             extract_kline_close_prices(_klines_from_closes([1.0]), required_count=2)
         with self.assertRaisesRegex(ValueError, "positive"):
             extract_kline_close_prices(_klines_from_closes([1.0, 0.0]), required_count=2)
+
+    def test_recent_kline_range_filter_uses_latest_two_klines(self):
+        klines = [
+            _kline(0, close=100.0, high=140.0, low=100.0),
+            _kline(1, close=101.0, high=102.0, low=100.0),
+            {"timestamp": 2, "close": "103", "high": "104", "low": "102"},
+        ]
+
+        changes = extract_recent_kline_range_changes(klines)
+        result = validate_recent_kline_range_filter(klines)
+
+        self.assertEqual(len(changes), 2)
+        self.assertAlmostEqual(changes[0], 2.0 / 101.0)
+        self.assertAlmostEqual(changes[1], 2.0 / 103.0)
+        self.assertLess(result["recent_kline_range_max_change"], RECENT_KLINE_RANGE_CHANGE_LIMIT)
+
+    def test_build_trend_candidate_rejects_current_or_previous_kline_above_four_percent(self):
+        for index in (-2, -1):
+            with self.subTest(index=index):
+                klines = _klines_from_closes(_trend_prices(rate=0.001))
+                klines[index][2] = "105"
+                klines[index][3] = "100"
+
+                with self.assertRaisesRegex(ValueError, "range change above limit"):
+                    _build_trend_candidate("VOLATILEUSDT", klines, required_count=168)
+
+    def test_build_trend_candidate_keeps_recent_range_metadata_when_filter_passes(self):
+        candidate = _build_trend_candidate(
+            "ORDERLYUSDT",
+            _klines_from_closes(_trend_prices(rate=0.001)),
+            required_count=168,
+        )
+
+        self.assertEqual(candidate["symbol"], "ORDERLYUSDT")
+        self.assertEqual(candidate["recent_kline_range_changes"], [0.0, 0.0])
+        self.assertEqual(candidate["recent_kline_range_change_limit"], RECENT_KLINE_RANGE_CHANGE_LIMIT)
 
     def test_universe_keeps_trading_crypto_usdt_perpetuals_only(self):
         exchange_info = {
