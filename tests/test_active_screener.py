@@ -10,7 +10,7 @@ from src.strategy.active_screener import (
 )
 
 
-def _trend_prices(*, rate: float, count: int = 672, wiggle: float = 0.0, start: float = 100.0):
+def _trend_prices(*, rate: float, count: int = 168, wiggle: float = 0.0, start: float = 100.0):
     return [start * math.exp((rate * index) + (wiggle * math.sin(index / 9.0))) for index in range(count)]
 
 
@@ -24,10 +24,12 @@ class ActiveScreenerTests(unittest.TestCase):
 
         self.assertEqual(metrics["symbol"], "LONGUSDT")
         self.assertEqual(metrics["trend_direction"], "LONG")
-        self.assertEqual(metrics["close_count"], 672)
+        self.assertEqual(metrics["close_count"], 168)
         self.assertGreater(metrics["linearity"], 0.99)
         self.assertGreater(metrics["efficiency"], 0.95)
         self.assertEqual(metrics["weekly_consistency"], 1.0)
+        self.assertEqual(metrics["weekly_consistency_segments"], 1)
+        self.assertEqual(metrics["daily_consistency_segments"], 7)
 
     def test_trend_metrics_identifies_orderly_short_trend(self):
         metrics = calculate_trend_metrics("SHORTUSDT", _trend_prices(rate=-0.001, wiggle=0.001))
@@ -36,7 +38,13 @@ class ActiveScreenerTests(unittest.TestCase):
         self.assertLess(metrics["net_return_pct"], 0.0)
         self.assertGreater(metrics["directional_consistency"], 0.95)
 
-    def test_selects_highest_quality_four_week_trend_after_exclusions(self):
+    def test_consistency_segments_scale_with_close_count(self):
+        metrics = calculate_trend_metrics("LONGUSDT", _trend_prices(rate=0.001, count=168 * 4, wiggle=0.001))
+
+        self.assertEqual(metrics["weekly_consistency_segments"], 4)
+        self.assertEqual(metrics["daily_consistency_segments"], 28)
+
+    def test_selects_highest_quality_one_week_trend_after_exclusions(self):
         candidates = [
             calculate_trend_metrics("CHOPPYUSDT", _trend_prices(rate=0.0014, wiggle=0.18)),
             calculate_trend_metrics("ORDERLYUSDT", _trend_prices(rate=0.0010, wiggle=0.001)),

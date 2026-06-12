@@ -1,4 +1,4 @@
-"""Active USDT-M perpetual screening by four-week trend quality."""
+"""Active USDT-M perpetual screening by one-week trend quality."""
 
 from __future__ import annotations
 
@@ -26,6 +26,8 @@ logger = get_logger("active_screener")
 TREND_CANDIDATE_REPORT_LIMIT = 10
 TREND_REJECTION_LOG_LIMIT = 20
 TREND_STRENGTH_CAP = 100.0
+HOURLY_CANDLES_PER_DAY = 24
+HOURLY_CANDLES_PER_WEEK = HOURLY_CANDLES_PER_DAY * 7
 EPSILON = 1e-12
 
 TREND_SCORE_WEIGHTS: dict[str, float] = {
@@ -212,6 +214,14 @@ def _segment_direction_share(log_prices: Sequence[float], *, segments: int, dire
     return aligned / valid if valid else 0.0
 
 
+def _scaled_consistency_segments(close_count: int, *, candles_per_period: int) -> int:
+    count = max(1, safe_int(close_count, 1))
+    period = max(1, safe_int(candles_per_period, 1))
+    if count < 2:
+        return 1
+    return max(1, min(count - 1, int(round(count / period))))
+
+
 def calculate_trend_metrics(symbol: str, close_prices: Sequence[Any]) -> Dict[str, Any]:
     normalized_symbol = str(symbol or "").strip().upper()
     if not normalized_symbol:
@@ -270,8 +280,18 @@ def calculate_trend_metrics(symbol: str, close_prices: Sequence[Any]) -> Dict[st
     adverse_ratio = max_adverse_excursion / max(directional_net_return, EPSILON)
     adverse_score = 1.0 / (1.0 + adverse_ratio)
 
-    weekly_consistency = _segment_direction_share(log_prices, segments=4, direction_multiplier=direction_multiplier)
-    daily_consistency = _segment_direction_share(log_prices, segments=28, direction_multiplier=direction_multiplier)
+    weekly_segments = _scaled_consistency_segments(count, candles_per_period=HOURLY_CANDLES_PER_WEEK)
+    daily_segments = _scaled_consistency_segments(count, candles_per_period=HOURLY_CANDLES_PER_DAY)
+    weekly_consistency = _segment_direction_share(
+        log_prices,
+        segments=weekly_segments,
+        direction_multiplier=direction_multiplier,
+    )
+    daily_consistency = _segment_direction_share(
+        log_prices,
+        segments=daily_segments,
+        direction_multiplier=direction_multiplier,
+    )
     trend_log_return = slope * (count - 1)
     realized_volatility = 0.0
     if len(returns) > 1:
@@ -296,6 +316,8 @@ def calculate_trend_metrics(symbol: str, close_prices: Sequence[Any]) -> Dict[st
         "directional_consistency": directional_consistency,
         "weekly_consistency": weekly_consistency,
         "daily_consistency": daily_consistency,
+        "weekly_consistency_segments": weekly_segments,
+        "daily_consistency_segments": daily_segments,
         "max_adverse_excursion": max_adverse_excursion,
         "adverse_ratio": adverse_ratio,
         "adverse_score": adverse_score,

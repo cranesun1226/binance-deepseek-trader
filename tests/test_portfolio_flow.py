@@ -15,7 +15,7 @@ def _config():
         "capital_usage_ratio": 0.99,
         "rebalance_threshold_pct": 0.03,
         "ai_prompt_timeframe": "1h",
-        "ai_prompt_candle_count": 672,
+        "ai_prompt_candle_count": 168,
         "deepseek_model": "deepseek-v4-flash",
         "deepseek_reasoning_effort": "max",
         "deepseek_max_tokens": 8192,
@@ -101,7 +101,7 @@ class PortfolioFlowTests(unittest.TestCase):
         mocked_tradfi.assert_not_called()
         self.assertEqual(mocked_crypto.call_args.kwargs["quote"], "USDT")
         self.assertEqual(mocked_crypto.call_args.kwargs["required_kline_interval"], "1h")
-        self.assertEqual(mocked_crypto.call_args.kwargs["required_kline_count"], 672)
+        self.assertEqual(mocked_crypto.call_args.kwargs["required_kline_count"], 168)
 
     def test_active2_candidate_screening_uses_tradfi_screener(self):
         with patch(
@@ -122,7 +122,26 @@ class PortfolioFlowTests(unittest.TestCase):
         mocked_crypto.assert_not_called()
         self.assertEqual(mocked_tradfi.call_args.kwargs["quote"], "USDT")
         self.assertEqual(mocked_tradfi.call_args.kwargs["required_kline_interval"], "1h")
-        self.assertEqual(mocked_tradfi.call_args.kwargs["required_kline_count"], 672)
+        self.assertEqual(mocked_tradfi.call_args.kwargs["required_kline_count"], 168)
+
+    def test_prompt_market_context_fetches_padding_and_serializes_requested_count(self):
+        raw_klines = [[index, "0", "0", "0", str(float(index + 1))] for index in range(170)]
+
+        with patch("src.strategy.portfolio_strategy.fetch_klines", return_value=raw_klines) as mocked_fetch:
+            context = portfolio_strategy._fetch_prompt_market_context(
+                symbol="BTCUSDT",
+                ai_prompt_timeframe="1h",
+                ai_prompt_candle_count=168,
+                as_of_ms=123456,
+                reference_price=999.0,
+            )
+
+        mocked_fetch.assert_called_once_with("BTCUSDT", "1h", 170, as_of_ms=123456)
+        close_prices = context["timeframes"]["1h"]
+        self.assertEqual(context["ai_prompt_candle_count"], 168)
+        self.assertEqual(len(close_prices), 168)
+        self.assertEqual(close_prices[0], 3.0)
+        self.assertEqual(close_prices[-1], 999.0)
 
     def test_post_trade_direction_mismatch_is_closed_and_marked_failed(self):
         with patch(
@@ -393,7 +412,7 @@ class PortfolioFlowTests(unittest.TestCase):
         with patch(
             "src.strategy.portfolio_strategy._screen_active_candidate",
             side_effect=portfolio_strategy.NoActiveCandidateError(
-                "active crypto trend screener found no candidate with at least 672 1h valid close-price klines"
+                "active crypto trend screener found no candidate with at least 168 1h valid close-price klines"
             ),
         ):
             result, updated_state, active_symbol = portfolio_strategy._run_active_slot(
