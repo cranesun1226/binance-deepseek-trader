@@ -273,7 +273,7 @@ class DeepSeekTraderTests(unittest.TestCase):
             'You are a world-class BTCUSDT trader.\n'
             'Return JSON only with exactly two fields: decision and reason.\n'
             "Analyze with your own trader's instinctive market sense to anticipate future price action and judge whether a LONG or SHORT position offers a higher expected value.\n"
-            'The reason must be english, reasonable, data-based, and 200 words or fewer.'
+            'The reason must be english, reasonable, data-based, and 200 words or fewer.\n'
             'Examples: {"decision":"LONG","reason":"..."} or {"decision":"SHORT","reason":"..."}.\n'
             'Market payload:\n{"symbol":"BTCUSDT","reference_price":100.0,"timeframes":{"1h":[98.0,99.0,100.0]}}',
         )
