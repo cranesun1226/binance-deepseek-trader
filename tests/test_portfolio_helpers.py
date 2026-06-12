@@ -48,6 +48,46 @@ class PortfolioHelperTests(unittest.TestCase):
 
         self.assertEqual(target, 247.5)
 
+    def test_slot_leverage_defaults_passive_to_2x_and_active_to_1x(self):
+        passive = portfolio_strategy.PortfolioSlot(
+            slot_id="passive_cl",
+            label="CLUSDT",
+            kind="passive",
+            target_margin_ratio=0.125,
+            symbol="CLUSDT",
+        )
+        active = portfolio_strategy.PortfolioSlot(
+            slot_id="active_1",
+            label="active1",
+            kind="active",
+            target_margin_ratio=0.25,
+        )
+
+        self.assertEqual(portfolio_strategy._leverage_for_slot(passive, {}), 2)
+        self.assertEqual(portfolio_strategy._leverage_for_slot(active, {}), 1)
+
+    def test_ensure_symbol_leverage_fails_closed_on_mismatch(self):
+        with patch("src.strategy.portfolio_strategy.set_leverage", return_value=1):
+            result = portfolio_strategy._ensure_symbol_leverage(
+                api_key="key",
+                api_secret="secret",
+                symbol="CLUSDT",
+                leverage=2,
+                current_position={
+                    "symbol": "CLUSDT",
+                    "positionAmt": "1",
+                    "side": "Buy",
+                    "entryPrice": "100",
+                    "markPrice": "100",
+                    "leverage": "1",
+                },
+            )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["action"], "set_leverage_failed")
+        self.assertEqual(result["requested_leverage"], 2)
+        self.assertEqual(result["actual_leverage"], 1)
+
     def test_fixed_stop_loss_is_entry_price_four_percent(self):
         self.assertEqual(
             portfolio_strategy._resolve_fixed_stop_loss_price(

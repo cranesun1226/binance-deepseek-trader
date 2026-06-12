@@ -25,6 +25,7 @@ from src.binance.trade_position import (
     get_reference_price,
     place_market_entry_order,
     safe_decimal,
+    set_leverage,
     sync_existing_position_stop_loss,
     wait_for_close_propagation,
 )
@@ -34,8 +35,10 @@ from src.strategy.active_screener import NoActiveCandidateError, screen_active_s
 from src.strategy.runtime_config import (
     DEFAULT_AI_PROMPT_CANDLE_COUNT,
     DEFAULT_AI_PROMPT_TIMEFRAME,
+    DEFAULT_ACTIVE_LEVERAGE,
     DEFAULT_CAPITAL_USAGE_RATIO,
     DEFAULT_FIXED_LEVERAGE,
+    DEFAULT_PASSIVE_LEVERAGE,
     DEFAULT_DEEPSEEK_MAX_TOKENS,
     DEFAULT_DEEPSEEK_MODEL,
     DEFAULT_DEEPSEEK_REASONING_EFFORT,
@@ -65,6 +68,8 @@ MATERIAL_POSITION_RECORD_ACTIONS = {
     "reverse_close_failed",
     "reverse_reopen_failed",
     "reversed_position",
+    "invalid_symbol_for_leverage",
+    "set_leverage_failed",
     "switch_close_failed",
 }
 NotificationCallback = Optional[Callable[[str, Dict[str, Any]], None]]
@@ -181,6 +186,14 @@ def _load_strategy_config() -> Dict[str, Any]:
             raw.get("fixed_leverage", DEFAULT_FIXED_LEVERAGE),
             DEFAULT_FIXED_LEVERAGE,
         ),
+        "passive_leverage": _normalize_positive_int(
+            raw.get("passive_leverage", DEFAULT_PASSIVE_LEVERAGE),
+            DEFAULT_PASSIVE_LEVERAGE,
+        ),
+        "active_leverage": _normalize_positive_int(
+            raw.get("active_leverage", DEFAULT_ACTIVE_LEVERAGE),
+            DEFAULT_ACTIVE_LEVERAGE,
+        ),
         "stop_loss_pct": _normalize_ratio(raw.get("stop_loss_pct", 0.04), 0.04),
         "capital_usage_ratio": min(
             1.0,
@@ -249,6 +262,21 @@ def _build_portfolio_slots(config: Dict[str, Any]) -> list[PortfolioSlot]:
         ]
     )
     return slots
+
+
+def _leverage_for_slot(slot: PortfolioSlot, config: Dict[str, Any]) -> int:
+    if slot.kind == "passive":
+        return _normalize_positive_int(
+            config.get("passive_leverage", DEFAULT_PASSIVE_LEVERAGE),
+            DEFAULT_PASSIVE_LEVERAGE,
+        )
+    if slot.kind == "active":
+        return _normalize_positive_int(
+            config.get("active_leverage", DEFAULT_ACTIVE_LEVERAGE),
+            DEFAULT_ACTIVE_LEVERAGE,
+        )
+    logger.warning("Unknown slot kind for leverage resolution: slot_id=%s kind=%s", slot.slot_id, slot.kind)
+    return DEFAULT_ACTIVE_LEVERAGE
 
 
 def _current_time_ms() -> int:
@@ -656,6 +684,80 @@ def _positions_by_symbol(positions: Sequence[Dict[str, Any]]) -> dict[str, Dict[
     return mapped
 
 
+def _position_leverage(position: Optional[Dict[str, Any]]) -> Optional[int]:
+    parsed = _safe_float(calculate_position_metrics(position).get("leverage"), None)
+    if parsed is None or parsed <= 0.0:
+        return None
+    return int(parsed)
+
+
+def _ensure_symbol_leverage(
+    *,
+    api_key: str,
+    api_secret: str,
+    symbol: str,
+    leverage: int,
+    current_position: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    normalized_symbol = _normalize_symbol(symbol)
+    requested_leverage = _normalize_positive_int(leverage, DEFAULT_ACTIVE_LEVERAGE)
+    if not normalized_symbol:
+        return {
+            "success": False,
+            "action": "invalid_symbol_for_leverage",
+            "requested_leverage": requested_leverage,
+        }
+
+    current_leverage = _position_leverage(current_position)
+    if current_leverage == requested_leverage:
+        return {
+            "success": True,
+            "action": "leverage_already_configured",
+            "symbol": normalized_symbol,
+            "requested_leverage": requested_leverage,
+            "actual_leverage": current_leverage,
+        }
+
+    try:
+        actual_leverage = set_leverage(api_key, api_secret, normalized_symbol, requested_leverage)
+    except Exception as exc:
+        logger.error(
+            "set_leverage(%s) raised before slot execution | requested_leverage=%s error=%s",
+            normalized_symbol,
+            requested_leverage,
+            exc,
+        )
+        return {
+            "success": False,
+            "action": "set_leverage_failed",
+            "symbol": normalized_symbol,
+            "requested_leverage": requested_leverage,
+            "current_leverage": current_leverage,
+            "error": str(exc),
+        }
+
+    actual_leverage_int = _normalize_positive_int(actual_leverage, 0)
+    if actual_leverage_int != requested_leverage:
+        return {
+            "success": False,
+            "action": "set_leverage_failed",
+            "symbol": normalized_symbol,
+            "requested_leverage": requested_leverage,
+            "current_leverage": current_leverage,
+            "actual_leverage": actual_leverage,
+            "error": "leverage_mismatch",
+        }
+
+    return {
+        "success": True,
+        "action": "set_leverage_configured",
+        "symbol": normalized_symbol,
+        "requested_leverage": requested_leverage,
+        "previous_leverage": current_leverage,
+        "actual_leverage": actual_leverage_int,
+    }
+
+
 def _resolve_fixed_stop_loss_price(
     *,
     direction: str,
@@ -806,12 +908,14 @@ def _place_direction_position(
         leverage=leverage,
     )
     if order is None:
+        failure_action = "set_leverage_failed" if str(msg or "") == "set_leverage_failed" else "entry_order_failed"
         return {
             "success": False,
-            "action": "entry_order_failed",
+            "action": failure_action,
             "order_error_code": code,
             "order_error_message": msg,
             "qty": qty,
+            "leverage": leverage,
             "requested_notional_usdt": desired_notional,
             "order_plan": order_plan,
         }
@@ -822,6 +926,7 @@ def _place_direction_position(
         "side": side,
         "order": order,
         "qty": qty,
+        "leverage": leverage,
         "requested_notional_usdt": desired_notional,
         "order_plan": order_plan,
     }
@@ -1295,6 +1400,8 @@ def _slot_result_base(slot: PortfolioSlot, symbol: Optional[str]) -> Dict[str, A
         "slot_label": slot.label,
         "slot_kind": slot.kind,
         "symbol": symbol,
+        "leverage": None,
+        "leverage_sync": None,
         "success": False,
         "action": "init",
         "ai_triggered": False,
@@ -1327,6 +1434,24 @@ def _run_passive_slot(
     symbol = str(slot.symbol)
     result = _slot_result_base(slot, symbol)
     result["position_before"] = calculate_position_metrics(position) if isinstance(position, dict) else None
+    leverage = _leverage_for_slot(slot, config)
+    result["leverage"] = leverage
+    if isinstance(position, dict):
+        leverage_sync = _ensure_symbol_leverage(
+            api_key=api_key,
+            api_secret=api_secret,
+            symbol=symbol,
+            leverage=leverage,
+            current_position=position,
+        )
+        result["leverage_sync"] = leverage_sync
+        if not bool(leverage_sync.get("success")):
+            result["action"] = str(leverage_sync.get("action") or "set_leverage_failed")
+            result["position"] = calculate_position_metrics(position)
+            return result, slot_state
+        position = dict(position)
+        position["leverage"] = _normalize_positive_int(leverage_sync.get("actual_leverage"), leverage)
+
     reference_price = _reference_price(symbol)
     if reference_price is None:
         result["action"] = "reference_price_unavailable"
@@ -1347,7 +1472,6 @@ def _run_passive_slot(
         }
     )
 
-    leverage = int(config["fixed_leverage"])
     target_notional = _target_notional_usdt(
         account_equity=float(account_overview["equity"]),
         slot=slot,
@@ -1507,7 +1631,8 @@ def _run_active_slot(
     current_symbol = _position_symbol(position) if isinstance(position, dict) else None
     result = _slot_result_base(slot, current_symbol or state_symbol)
     result["position_before"] = calculate_position_metrics(position) if isinstance(position, dict) else None
-    leverage = int(config["fixed_leverage"])
+    leverage = _leverage_for_slot(slot, config)
+    result["leverage"] = leverage
     target_notional = _target_notional_usdt(
         account_equity=float(account_overview["equity"]),
         slot=slot,
@@ -1522,6 +1647,21 @@ def _run_active_slot(
     result["target_notional_usdt"] = target_notional
 
     if isinstance(position, dict) and current_symbol:
+        leverage_sync = _ensure_symbol_leverage(
+            api_key=api_key,
+            api_secret=api_secret,
+            symbol=current_symbol,
+            leverage=leverage,
+            current_position=position,
+        )
+        result["leverage_sync"] = leverage_sync
+        if not bool(leverage_sync.get("success")):
+            result["action"] = str(leverage_sync.get("action") or "set_leverage_failed")
+            result["position"] = calculate_position_metrics(position)
+            return result, slot_state, current_symbol
+        position = dict(position)
+        position["leverage"] = _normalize_positive_int(leverage_sync.get("actual_leverage"), leverage)
+
         reference_price = _reference_price(current_symbol)
         if reference_price is None:
             result["action"] = "reference_price_unavailable"
@@ -1776,6 +1916,8 @@ def run_portfolio_cycle(
         "state_update": portfolio_state,
         "config_summary": {
             "fixed_leverage": config["fixed_leverage"],
+            "passive_leverage": config["passive_leverage"],
+            "active_leverage": config["active_leverage"],
             "capital_usage_ratio": config["capital_usage_ratio"],
             "trigger_pct_usdt": config["trigger_pct_usdt"],
             "stop_loss_pct": config["stop_loss_pct"],

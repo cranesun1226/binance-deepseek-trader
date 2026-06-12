@@ -11,6 +11,8 @@ def _config():
         "cycle_interval_seconds": 60,
         "trigger_pct_usdt": 1.0,
         "fixed_leverage": 1,
+        "passive_leverage": 2,
+        "active_leverage": 1,
         "stop_loss_pct": 0.04,
         "capital_usage_ratio": 0.99,
         "rebalance_threshold_pct": 0.03,
@@ -285,6 +287,15 @@ class PortfolioFlowTests(unittest.TestCase):
             "src.strategy.portfolio_strategy._evaluate_slot_direction",
             return_value=("SHORT", {"reasoning": "reverse"}, {}),
         ) as mocked_ai, patch(
+            "src.strategy.portfolio_strategy._ensure_symbol_leverage",
+            return_value={
+                "success": True,
+                "action": "set_leverage_configured",
+                "symbol": "CLUSDT",
+                "requested_leverage": 2,
+                "actual_leverage": 2,
+            },
+        ) as mocked_leverage, patch(
             "src.strategy.portfolio_strategy._rebalance_existing_position",
             return_value={
                 "success": True,
@@ -314,9 +325,13 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertEqual(updated_state["symbol"], "CLUSDT")
         self.assertEqual(updated_state["last_ai_decision"], "SHORT")
         mocked_ai.assert_called_once()
+        mocked_leverage.assert_called_once()
+        self.assertEqual(mocked_leverage.call_args.kwargs["leverage"], 2)
         mocked_rebalance.assert_called_once()
         self.assertEqual(mocked_rebalance.call_args.kwargs["symbol"], "CLUSDT")
         self.assertEqual(mocked_rebalance.call_args.kwargs["decision"], "SHORT")
+        self.assertEqual(mocked_rebalance.call_args.kwargs["leverage"], 2)
+        self.assertEqual(result["leverage"], 2)
         mocked_screen.assert_not_called()
 
     def test_active_existing_same_direction_does_not_rescreen(self):
@@ -362,6 +377,8 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertEqual(updated_state["symbol"], "ETHUSDT")
         mocked_ai.assert_called_once()
         mocked_rebalance.assert_called_once()
+        self.assertEqual(mocked_rebalance.call_args.kwargs["leverage"], 1)
+        self.assertEqual(result["leverage"], 1)
         mocked_screen.assert_not_called()
 
     def test_active_screener_failure_does_not_create_db_artifact_without_position_event(self):

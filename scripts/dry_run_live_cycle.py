@@ -106,6 +106,7 @@ def _summarize_result(result: Dict[str, Any]) -> Dict[str, Any]:
                 "action": row.get("action"),
                 "ai_triggered": row.get("ai_triggered"),
                 "ai_decision": row.get("ai_decision") or row.get("position_exit_ai_decision"),
+                "leverage": row.get("leverage"),
                 "target_notional_usdt": row.get("target_notional_usdt"),
             }
             for row in result.get("slot_results", [])

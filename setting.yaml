@@ -19,7 +19,9 @@ deepseek_max_tokens: 8192
 deepseek_timeout_seconds: 300.0
 
 # Portfolio allocation
-fixed_leverage: 1
+# Passive fixed-symbol slots use 2x leverage; both active slots stay at 1x.
+passive_leverage: 2
+active_leverage: 1
 capital_usage_ratio: 0.99
 rebalance_threshold_pct: 0.03
 stop_loss_pct: 0.04

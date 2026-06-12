@@ -2,7 +2,7 @@
 
 DeepSeek-powered six-slot Binance USDT-M futures trading bot.
 
-This project runs a 1x-leverage portfolio loop across four fixed passive markets and two dynamically screened active markets. Each slot is evaluated one symbol at a time by DeepSeek using `deepseek-v4-flash` with `max` reasoning effort, then managed with market entries/exits, rebalancing, stop-loss synchronization, and Telegram reporting.
+This project runs a six-slot portfolio loop across four fixed 2x-leverage passive markets and two dynamically screened 1x-leverage active markets. Each slot is evaluated one symbol at a time by DeepSeek using `deepseek-v4-flash` with `max` reasoning effort, then managed with market entries/exits, rebalancing, stop-loss synchronization, and Telegram reporting.
 
 > This software is for research and automation experiments. It is not financial advice. Futures trading can lose money quickly, and live mode sends real Binance Futures orders.
 
@@ -21,7 +21,7 @@ This project runs a 1x-leverage portfolio loop across four fixed passive markets
 - 자산 배분
   - Passive 각 12.5%
   - Active 각 25%
-  - 기본 총 투입률 99%, 레버리지 1x
+  - 기본 총 투입률 99%, passive 2x / active 1x 레버리지
 - 리스크 관리
   - 각 포지션 진입가 기준 4% stop loss 동기화
   - 마지막 LLM 판단 기준가에서 ±1% 이동 시 재판단
@@ -93,7 +93,8 @@ deepseek_model: deepseek-v4-flash
 deepseek_reasoning_effort: max
 deepseek_max_tokens: 8192
 deepseek_timeout_seconds: 300.0
-fixed_leverage: 1
+passive_leverage: 2
+active_leverage: 1
 capital_usage_ratio: 0.99
 rebalance_threshold_pct: 0.03
 stop_loss_pct: 0.04
@@ -230,7 +231,7 @@ python -m py_compile main.py src/ai/deepseek_trader.py src/strategy/portfolio_st
 - Allocation
   - 12.5% per passive slot
   - 25% per active slot
-  - 99% default capital usage, 1x leverage
+  - 99% default capital usage, 2x passive leverage and 1x active leverage
 - Risk management
   - Native stop loss synchronized at 4% from entry price
   - Re-evaluates a slot after a ±1% move from the last LLM decision anchor
@@ -302,7 +303,8 @@ deepseek_model: deepseek-v4-flash
 deepseek_reasoning_effort: max
 deepseek_max_tokens: 8192
 deepseek_timeout_seconds: 300.0
-fixed_leverage: 1
+passive_leverage: 2
+active_leverage: 1
 capital_usage_ratio: 0.99
 rebalance_threshold_pct: 0.03
 stop_loss_pct: 0.04
