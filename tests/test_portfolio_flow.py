@@ -25,10 +25,6 @@ def _config():
         "screener_timeout": 30.0,
         "screener_retries": 3,
         "screener_request_sleep": 0.1,
-        "active_filter_min_7d_avg_daily_quote_volume_usdt": 50_000_000.0,
-        "active_filter_min_7d_p10_hourly_quote_volume_usdt": 100_000.0,
-        "active_filter_min_open_interest_notional_usdt": 50_000_000.0,
-        "active_filter_min_order_book_depth_10bps_usdt": 100_000.0,
     }
 
 
@@ -106,15 +102,6 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertEqual(mocked_crypto.call_args.kwargs["quote"], "USDT")
         self.assertEqual(mocked_crypto.call_args.kwargs["required_kline_interval"], "1h")
         self.assertEqual(mocked_crypto.call_args.kwargs["required_kline_count"], 168)
-        self.assertEqual(
-            mocked_crypto.call_args.kwargs["active_filter"],
-            {
-                "min_7d_avg_daily_quote_volume_usdt": 50_000_000.0,
-                "min_7d_p10_hourly_quote_volume_usdt": 100_000.0,
-                "min_open_interest_notional_usdt": 50_000_000.0,
-                "min_order_book_depth_10bps_usdt": 100_000.0,
-            },
-        )
 
     def test_active2_candidate_screening_uses_tradfi_screener(self):
         with patch(
@@ -136,7 +123,6 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertEqual(mocked_tradfi.call_args.kwargs["quote"], "USDT")
         self.assertEqual(mocked_tradfi.call_args.kwargs["required_kline_interval"], "1h")
         self.assertEqual(mocked_tradfi.call_args.kwargs["required_kline_count"], 168)
-        self.assertNotIn("active_filter", mocked_tradfi.call_args.kwargs)
 
     def test_prompt_market_context_fetches_padding_and_serializes_requested_count(self):
         raw_klines = [[index, "0", "0", "0", str(float(index + 1))] for index in range(170)]

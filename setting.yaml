@@ -36,13 +36,6 @@ passive_symbols:
 # Both active slots select the highest-scoring 1-week trend candidate using
 # ai_prompt_candle_count closes on ai_prompt_timeframe.
 
-# active1-only crypto liquidity filters. active2 TradFi screening keeps the
-# original trend-only selection logic.
-active_filter_min_7d_avg_daily_quote_volume_usdt: 50000000
-active_filter_min_7d_p10_hourly_quote_volume_usdt: 100000
-active_filter_min_open_interest_notional_usdt: 50000000
-active_filter_min_order_book_depth_10bps_usdt: 100000
-
 # Binance public API stability knobs for active screening.
 screener_quote: USDT
 screener_timeout: 30.0

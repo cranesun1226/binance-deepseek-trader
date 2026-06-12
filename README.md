@@ -52,7 +52,7 @@ LLM에는 한 번에 한 종목의 `symbol`, 현재 `reference_price`, 그리고
 
 ### Active 스크리닝
 
-Active 1과 Active 2는 같은 1주 추세 품질 공식으로 평가됩니다. Active 1은 crypto USDT-M perpetual, Active 2는 TradFi USDT-M perpetual을 대상으로 하며, passive 심볼과 이미 관리 중인 심볼은 제외합니다. Active 1만 거래대금, 시간당 거래대금 하위 10%, open interest 명목가치, 10bps 호가 깊이 하한을 먼저 통과해야 합니다. Active 2는 기존 TradFi trend-only 스크리닝을 유지합니다.
+Active 1과 Active 2는 같은 1주 추세 품질 공식으로 평가됩니다. 차이는 유니버스뿐입니다. Active 1은 crypto USDT-M perpetual, Active 2는 TradFi USDT-M perpetual을 대상으로 하며, passive 심볼과 이미 관리 중인 심볼은 제외합니다.
 
 각 후보는 `ai_prompt_timeframe`의 `ai_prompt_candle_count`개 종가를 가져와 로그가격 선형 추세를 계산합니다. 1시간봉 기준 `weekly_consistency`와 `daily_consistency`는 데이터 길이에 맞춰 동적으로 분할되며, 기본 168개에서는 각각 1개 주간 구간과 7개 일간 구간을 사용합니다. 최종 점수는 `trend_strength`, `linearity`, `efficiency`, `directional_consistency`, `weekly_consistency`, `daily_consistency`, `adverse_score`, `trend_magnitude`의 유니버스 내부 percentile rank 가중합입니다.
 
@@ -104,10 +104,6 @@ passive_symbols:
   - BTCUSDT
 # Active candidates are ranked by the unified 1-week trend score using
 # ai_prompt_candle_count closes on ai_prompt_timeframe.
-active_filter_min_7d_avg_daily_quote_volume_usdt: 50000000
-active_filter_min_7d_p10_hourly_quote_volume_usdt: 100000
-active_filter_min_open_interest_notional_usdt: 50000000
-active_filter_min_order_book_depth_10bps_usdt: 100000
 screener_quote: USDT
 screener_timeout: 30.0
 screener_retries: 3
@@ -265,7 +261,7 @@ The LLM receives only one symbol at a time: `symbol`, live `reference_price`, an
 
 ### Active Screening
 
-Active 1 and Active 2 use the same one-week trend-quality formula. Active 1 screens crypto USDT-M perpetuals, Active 2 screens TradFi USDT-M perpetuals, and passive or already-managed symbols are excluded. Active 1 must first pass minimum filters for quote volume, 10th-percentile hourly quote volume, open-interest notional, and 10bps order-book depth. Active 2 keeps the original TradFi trend-only screening.
+Active 1 and Active 2 use the same one-week trend-quality formula. Only the universe differs. Active 1 screens crypto USDT-M perpetuals, Active 2 screens TradFi USDT-M perpetuals, and passive or already-managed symbols are excluded.
 
 For each candidate, the screener fetches `ai_prompt_candle_count` closes on `ai_prompt_timeframe` and fits a linear trend on log prices. For 1h candles, `weekly_consistency` and `daily_consistency` scale dynamically with the data length; the default 168 closes use one weekly segment and seven daily segments. The final score is a weighted sum of universe-local percentile ranks for `trend_strength`, `linearity`, `efficiency`, `directional_consistency`, `weekly_consistency`, `daily_consistency`, `adverse_score`, and `trend_magnitude`.
 
@@ -317,10 +313,6 @@ passive_symbols:
   - BTCUSDT
 # Active candidates are ranked by the unified 1-week trend score using
 # ai_prompt_candle_count closes on ai_prompt_timeframe.
-active_filter_min_7d_avg_daily_quote_volume_usdt: 50000000
-active_filter_min_7d_p10_hourly_quote_volume_usdt: 100000
-active_filter_min_open_interest_notional_usdt: 50000000
-active_filter_min_order_book_depth_10bps_usdt: 100000
 screener_quote: USDT
 screener_timeout: 30.0
 screener_retries: 3
