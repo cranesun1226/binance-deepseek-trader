@@ -28,7 +28,16 @@ TREND_REJECTION_LOG_LIMIT = 20
 TREND_STRENGTH_CAP = 100.0
 HOURLY_CANDLES_PER_DAY = 24
 HOURLY_CANDLES_PER_WEEK = HOURLY_CANDLES_PER_DAY * 7
+ORDER_BOOK_DEPTH_LIMIT = 100
+ORDER_BOOK_DEPTH_BPS = 10.0
 EPSILON = 1e-12
+
+ACTIVE_FILTER_KEYS = {
+    "min_7d_avg_daily_quote_volume_usdt": 0.0,
+    "min_7d_p10_hourly_quote_volume_usdt": 0.0,
+    "min_open_interest_notional_usdt": 0.0,
+    "min_order_book_depth_10bps_usdt": 0.0,
+}
 
 TREND_SCORE_WEIGHTS: dict[str, float] = {
     "trend_strength": 0.22,
@@ -118,6 +127,26 @@ class BinanceActiveMarketDataClient:
         )
         return data if isinstance(data, list) else []
 
+    def open_interest(self, symbol: str) -> Dict[str, Any]:
+        normalized_symbol = str(symbol or "").strip().upper()
+        if not normalized_symbol:
+            return {}
+        data = self._json("/fapi/v1/openInterest", {"symbol": normalized_symbol})
+        return data if isinstance(data, dict) else {}
+
+    def order_book(self, symbol: str, limit: int = ORDER_BOOK_DEPTH_LIMIT) -> Dict[str, Any]:
+        normalized_symbol = str(symbol or "").strip().upper()
+        if not normalized_symbol:
+            return {}
+        data = self._json(
+            "/fapi/v1/depth",
+            {
+                "symbol": normalized_symbol,
+                "limit": max(5, int(limit)),
+            },
+        )
+        return data if isinstance(data, dict) else {}
+
 
 def is_tradfi_symbol_info(row: Dict[str, Any]) -> bool:
     contract_type = str(row.get("contractType") or "").strip().upper()
@@ -190,6 +219,219 @@ def extract_kline_close_prices(klines: Sequence[Any], *, required_count: int) ->
     if len(closes) < required:
         raise ValueError(f"not enough klines: have={len(closes)} need={required}")
     return closes[-required:]
+
+
+def extract_kline_quote_volumes(klines: Sequence[Any], *, required_count: int) -> list[float]:
+    required = max(1, safe_int(required_count, DEFAULT_AI_PROMPT_CANDLE_COUNT))
+    quote_volumes: list[float] = []
+    for row in klines or []:
+        raw_quote_volume = None
+        if isinstance(row, dict):
+            for key in ("quoteVolume", "quoteAssetVolume", "quote_asset_volume", "quote_asset_vol"):
+                if key in row:
+                    raw_quote_volume = row.get(key)
+                    break
+        elif isinstance(row, (list, tuple)) and len(row) > 7:
+            raw_quote_volume = row[7]
+        quote_volume = safe_float(raw_quote_volume, -1.0)
+        if quote_volume < 0.0:
+            raise ValueError("kline quote volumes must be non-negative")
+        quote_volumes.append(quote_volume)
+    if len(quote_volumes) < required:
+        raise ValueError(f"not enough quote-volume klines: have={len(quote_volumes)} need={required}")
+    return quote_volumes[-required:]
+
+
+def _interval_hours(interval: Any) -> float:
+    normalized = to_binance_kline_interval(interval).strip()
+    if len(normalized) < 2:
+        return 1.0
+    value = safe_float(normalized[:-1], 1.0)
+    unit = normalized[-1]
+    if value <= 0.0:
+        return 1.0
+    if unit == "s":
+        return value / 3600.0
+    if unit == "m":
+        return value / 60.0
+    if unit == "h":
+        return value
+    if unit == "d":
+        return value * 24.0
+    if unit == "w":
+        return value * 24.0 * 7.0
+    if unit == "M":
+        return value * 24.0 * 30.0
+    return 1.0
+
+
+def _percentile_floor(values: Sequence[float], percentile: float) -> float:
+    if not values:
+        return 0.0
+    sorted_values = sorted(float(value) for value in values)
+    bounded_percentile = max(0.0, min(1.0, float(percentile)))
+    index = int(math.floor((len(sorted_values) - 1) * bounded_percentile))
+    return sorted_values[index]
+
+
+def normalize_active_filter_config(active_filter: Optional[Dict[str, Any]]) -> Dict[str, float]:
+    if not isinstance(active_filter, dict):
+        return dict(ACTIVE_FILTER_KEYS)
+    normalized = dict(ACTIVE_FILTER_KEYS)
+    for key in normalized:
+        normalized[key] = max(0.0, safe_float(active_filter.get(key), 0.0))
+    return normalized
+
+
+def is_active_filter_enabled(active_filter: Optional[Dict[str, Any]]) -> bool:
+    return any(value > 0.0 for value in normalize_active_filter_config(active_filter).values())
+
+
+def calculate_kline_liquidity_metrics(
+    symbol: str,
+    klines: Sequence[Any],
+    *,
+    required_count: int,
+    required_kline_interval: Any,
+) -> Dict[str, Any]:
+    normalized_symbol = str(symbol or "").strip().upper()
+    quote_volumes = extract_kline_quote_volumes(klines, required_count=required_count)
+    close_prices = extract_kline_close_prices(klines, required_count=required_count)
+    interval_hours = max(_interval_hours(required_kline_interval), EPSILON)
+    covered_days = max((len(quote_volumes) * interval_hours) / 24.0, EPSILON)
+    hourly_quote_volumes = [quote_volume / interval_hours for quote_volume in quote_volumes]
+    return {
+        "symbol": normalized_symbol,
+        "kline_count": len(quote_volumes),
+        "interval_hours": interval_hours,
+        "covered_days": covered_days,
+        "quote_volume_usdt": sum(quote_volumes),
+        "avg_daily_quote_volume_usdt": sum(quote_volumes) / covered_days,
+        "p10_hourly_quote_volume_usdt": _percentile_floor(hourly_quote_volumes, 0.10),
+        "last_close": close_prices[-1],
+    }
+
+
+def _fail_active_filter(metric_name: str, actual: float, threshold: float) -> None:
+    raise ValueError(
+        f"active liquidity filter failed: {metric_name}={actual:.8g} < {threshold:.8g}"
+    )
+
+
+def _fetch_open_interest_notional_usdt(
+    symbol: str,
+    *,
+    client: BinanceActiveMarketDataClient,
+    last_close: float,
+) -> float:
+    payload = client.open_interest(symbol)
+    open_interest = safe_float(payload.get("openInterest"), -1.0)
+    if open_interest < 0.0:
+        raise ValueError("open interest is unavailable")
+    return open_interest * last_close
+
+
+def _parse_order_book_side(rows: Any) -> list[tuple[float, float]]:
+    parsed: list[tuple[float, float]] = []
+    for row in rows or []:
+        if isinstance(row, dict):
+            price = safe_float(row.get("price"), 0.0)
+            qty = safe_float(row.get("qty") or row.get("quantity"), 0.0)
+        elif isinstance(row, (list, tuple)) and len(row) >= 2:
+            price = safe_float(row[0], 0.0)
+            qty = safe_float(row[1], 0.0)
+        else:
+            continue
+        if price > 0.0 and qty > 0.0:
+            parsed.append((price, qty))
+    return parsed
+
+
+def _fetch_order_book_depth_10bps_usdt(
+    symbol: str,
+    *,
+    client: BinanceActiveMarketDataClient,
+) -> float:
+    payload = client.order_book(symbol, limit=ORDER_BOOK_DEPTH_LIMIT)
+    bids = _parse_order_book_side(payload.get("bids"))
+    asks = _parse_order_book_side(payload.get("asks"))
+    if not bids or not asks:
+        raise ValueError("order book depth is unavailable")
+    best_bid = max(price for price, _qty in bids)
+    best_ask = min(price for price, _qty in asks)
+    if best_bid <= 0.0 or best_ask <= 0.0 or best_bid > best_ask:
+        raise ValueError("order book top of book is invalid")
+    mid_price = (best_bid + best_ask) / 2.0
+    band_ratio = ORDER_BOOK_DEPTH_BPS / 10000.0
+    min_bid_price = mid_price * (1.0 - band_ratio)
+    max_ask_price = mid_price * (1.0 + band_ratio)
+    bid_depth = sum(price * qty for price, qty in bids if price >= min_bid_price)
+    ask_depth = sum(price * qty for price, qty in asks if price <= max_ask_price)
+    return min(bid_depth, ask_depth)
+
+
+def evaluate_active_liquidity_filter(
+    symbol: str,
+    klines: Sequence[Any],
+    *,
+    client: BinanceActiveMarketDataClient,
+    required_kline_interval: Any,
+    required_kline_count: int,
+    active_filter: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    thresholds = normalize_active_filter_config(active_filter)
+    metrics = calculate_kline_liquidity_metrics(
+        symbol,
+        klines,
+        required_count=required_kline_count,
+        required_kline_interval=required_kline_interval,
+    )
+
+    min_avg_daily_quote_volume = thresholds["min_7d_avg_daily_quote_volume_usdt"]
+    if metrics["avg_daily_quote_volume_usdt"] < min_avg_daily_quote_volume:
+        _fail_active_filter(
+            "avg_daily_quote_volume_usdt",
+            metrics["avg_daily_quote_volume_usdt"],
+            min_avg_daily_quote_volume,
+        )
+
+    min_p10_hourly_quote_volume = thresholds["min_7d_p10_hourly_quote_volume_usdt"]
+    if metrics["p10_hourly_quote_volume_usdt"] < min_p10_hourly_quote_volume:
+        _fail_active_filter(
+            "p10_hourly_quote_volume_usdt",
+            metrics["p10_hourly_quote_volume_usdt"],
+            min_p10_hourly_quote_volume,
+        )
+
+    min_open_interest = thresholds["min_open_interest_notional_usdt"]
+    if min_open_interest > 0.0:
+        metrics["open_interest_notional_usdt"] = _fetch_open_interest_notional_usdt(
+            symbol,
+            client=client,
+            last_close=safe_float(metrics.get("last_close"), 0.0),
+        )
+        if metrics["open_interest_notional_usdt"] < min_open_interest:
+            _fail_active_filter(
+                "open_interest_notional_usdt",
+                metrics["open_interest_notional_usdt"],
+                min_open_interest,
+            )
+
+    min_depth = thresholds["min_order_book_depth_10bps_usdt"]
+    if min_depth > 0.0:
+        metrics["order_book_depth_10bps_usdt"] = _fetch_order_book_depth_10bps_usdt(
+            symbol,
+            client=client,
+        )
+        if metrics["order_book_depth_10bps_usdt"] < min_depth:
+            _fail_active_filter(
+                "order_book_depth_10bps_usdt",
+                metrics["order_book_depth_10bps_usdt"],
+                min_depth,
+            )
+
+    metrics["thresholds"] = thresholds
+    return metrics
 
 
 def _segment_direction_share(log_prices: Sequence[float], *, segments: int, direction_multiplier: float) -> float:
@@ -412,18 +654,34 @@ def _screen_active_universe(
     excluded_symbols: Sequence[str],
     required_kline_interval: Any,
     required_kline_count: int,
+    active_filter: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     normalized_interval = to_binance_kline_interval(required_kline_interval)
     normalized_count = max(1, safe_int(required_kline_count, DEFAULT_AI_PROMPT_CANDLE_COUNT))
     excluded = _normalize_excluded_symbols(excluded_symbols)
     symbols = sorted(symbol for symbol in universe if symbol not in excluded)
+    normalized_filter = normalize_active_filter_config(active_filter)
+    filter_enabled = is_active_filter_enabled(normalized_filter)
     candidates: list[Dict[str, Any]] = []
     rejection_samples: list[Dict[str, Any]] = []
 
     for symbol in symbols:
         try:
             klines = client.klines(symbol, normalized_interval, normalized_count)
-            candidates.append(_build_trend_candidate(symbol, klines, required_count=normalized_count))
+            active_filter_metrics = None
+            if filter_enabled:
+                active_filter_metrics = evaluate_active_liquidity_filter(
+                    symbol,
+                    klines,
+                    client=client,
+                    required_kline_interval=normalized_interval,
+                    required_kline_count=normalized_count,
+                    active_filter=normalized_filter,
+                )
+            candidate = _build_trend_candidate(symbol, klines, required_count=normalized_count)
+            if active_filter_metrics:
+                candidate["active_filter"] = active_filter_metrics
+            candidates.append(candidate)
         except Exception as exc:
             if len(rejection_samples) < TREND_REJECTION_LOG_LIMIT:
                 rejection_samples.append({"symbol": symbol, "error": str(exc)})
@@ -444,6 +702,8 @@ def _screen_active_universe(
     selection["screened_symbols"] = len(symbols)
     selection["rejected_count"] = len(symbols) - len(candidates)
     selection["rejection_samples"] = rejection_samples
+    if filter_enabled:
+        selection["active_filter"] = normalized_filter
     return selection
 
 
@@ -463,12 +723,14 @@ def screen_active_symbol(
     request_sleep: float = 0.10,
     required_kline_interval: Any = DEFAULT_AI_PROMPT_TIMEFRAME,
     required_kline_count: int = DEFAULT_AI_PROMPT_CANDLE_COUNT,
+    active_filter: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     client = BinanceActiveMarketDataClient(
         timeout=timeout,
         retries=retries,
         request_sleep=request_sleep,
     )
+    normalized_filter = normalize_active_filter_config(active_filter)
     logger.info(
         "Active crypto trend screening started | %s",
         format_log_details(
@@ -477,6 +739,7 @@ def screen_active_symbol(
                 "required_kline_interval": required_kline_interval,
                 "required_kline_count": required_kline_count,
                 "excluded_symbols": sorted(_normalize_excluded_symbols(excluded_symbols)),
+                "active_filter": normalized_filter,
             }
         ),
     )
@@ -489,6 +752,7 @@ def screen_active_symbol(
         excluded_symbols=excluded_symbols,
         required_kline_interval=required_kline_interval,
         required_kline_count=required_kline_count,
+        active_filter=normalized_filter,
     )
     if not selection.get("symbol"):
         raise NoActiveCandidateError(_no_candidate_message("crypto", required_kline_interval, required_kline_count))
@@ -502,6 +766,7 @@ def screen_active_symbol(
             "required_kline_interval": to_binance_kline_interval(required_kline_interval),
             "required_kline_count": max(1, safe_int(required_kline_count, DEFAULT_AI_PROMPT_CANDLE_COUNT)),
             "score_weights": dict(TREND_SCORE_WEIGHTS),
+            "active_filter": normalized_filter,
         },
         "selection": selection,
     }
@@ -566,9 +831,13 @@ __all__ = [
     "TREND_SCORE_WEIGHTS",
     "build_usdt_tradfi_perpetual_universe",
     "build_usdt_perpetual_universe",
+    "calculate_kline_liquidity_metrics",
     "calculate_trend_metrics",
     "extract_kline_close_prices",
+    "extract_kline_quote_volumes",
+    "evaluate_active_liquidity_filter",
     "is_tradfi_symbol_info",
+    "normalize_active_filter_config",
     "score_trend_candidates",
     "screen_active_symbol",
     "screen_active_tradfi_symbol",

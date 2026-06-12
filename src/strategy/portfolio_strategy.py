@@ -34,6 +34,10 @@ from src.strategy.active_screener import NoActiveCandidateError, screen_active_s
 from src.strategy.runtime_config import (
     DEFAULT_AI_PROMPT_CANDLE_COUNT,
     DEFAULT_AI_PROMPT_TIMEFRAME,
+    DEFAULT_ACTIVE_FILTER_MIN_7D_AVG_DAILY_QUOTE_VOLUME_USDT,
+    DEFAULT_ACTIVE_FILTER_MIN_7D_P10_HOURLY_QUOTE_VOLUME_USDT,
+    DEFAULT_ACTIVE_FILTER_MIN_OPEN_INTEREST_NOTIONAL_USDT,
+    DEFAULT_ACTIVE_FILTER_MIN_ORDER_BOOK_DEPTH_10BPS_USDT,
     DEFAULT_CAPITAL_USAGE_RATIO,
     DEFAULT_FIXED_LEVERAGE,
     DEFAULT_DEEPSEEK_MAX_TOKENS,
@@ -109,6 +113,13 @@ def _normalize_positive_int(value: Any, default: int) -> int:
 def _normalize_positive_float(value: Any, default: float) -> float:
     parsed = _safe_float(value, default)
     if parsed is None or parsed <= 0.0:
+        return float(default)
+    return float(parsed)
+
+
+def _normalize_non_negative_float(value: Any, default: float) -> float:
+    parsed = _safe_float(value, default)
+    if parsed is None or parsed < 0.0:
         return float(default)
     return float(parsed)
 
@@ -214,6 +225,34 @@ def _load_strategy_config() -> Dict[str, Any]:
         "screener_timeout": _normalize_positive_float(raw.get("screener_timeout", 30.0), 30.0),
         "screener_retries": max(0, _safe_int(raw.get("screener_retries", 3), 3)),
         "screener_request_sleep": max(0.0, _safe_float(raw.get("screener_request_sleep", 0.10), 0.10) or 0.0),
+        "active_filter_min_7d_avg_daily_quote_volume_usdt": _normalize_non_negative_float(
+            raw.get(
+                "active_filter_min_7d_avg_daily_quote_volume_usdt",
+                DEFAULT_ACTIVE_FILTER_MIN_7D_AVG_DAILY_QUOTE_VOLUME_USDT,
+            ),
+            DEFAULT_ACTIVE_FILTER_MIN_7D_AVG_DAILY_QUOTE_VOLUME_USDT,
+        ),
+        "active_filter_min_7d_p10_hourly_quote_volume_usdt": _normalize_non_negative_float(
+            raw.get(
+                "active_filter_min_7d_p10_hourly_quote_volume_usdt",
+                DEFAULT_ACTIVE_FILTER_MIN_7D_P10_HOURLY_QUOTE_VOLUME_USDT,
+            ),
+            DEFAULT_ACTIVE_FILTER_MIN_7D_P10_HOURLY_QUOTE_VOLUME_USDT,
+        ),
+        "active_filter_min_open_interest_notional_usdt": _normalize_non_negative_float(
+            raw.get(
+                "active_filter_min_open_interest_notional_usdt",
+                DEFAULT_ACTIVE_FILTER_MIN_OPEN_INTEREST_NOTIONAL_USDT,
+            ),
+            DEFAULT_ACTIVE_FILTER_MIN_OPEN_INTEREST_NOTIONAL_USDT,
+        ),
+        "active_filter_min_order_book_depth_10bps_usdt": _normalize_non_negative_float(
+            raw.get(
+                "active_filter_min_order_book_depth_10bps_usdt",
+                DEFAULT_ACTIVE_FILTER_MIN_ORDER_BOOK_DEPTH_10BPS_USDT,
+            ),
+            DEFAULT_ACTIVE_FILTER_MIN_ORDER_BOOK_DEPTH_10BPS_USDT,
+        ),
     }
 
 
@@ -1128,6 +1167,20 @@ def _screen_active_candidate(
             request_sleep=float(config["screener_request_sleep"]),
             required_kline_interval=str(config["ai_prompt_timeframe"]),
             required_kline_count=int(config["ai_prompt_candle_count"]),
+            active_filter={
+                "min_7d_avg_daily_quote_volume_usdt": float(
+                    config["active_filter_min_7d_avg_daily_quote_volume_usdt"]
+                ),
+                "min_7d_p10_hourly_quote_volume_usdt": float(
+                    config["active_filter_min_7d_p10_hourly_quote_volume_usdt"]
+                ),
+                "min_open_interest_notional_usdt": float(
+                    config["active_filter_min_open_interest_notional_usdt"]
+                ),
+                "min_order_book_depth_10bps_usdt": float(
+                    config["active_filter_min_order_book_depth_10bps_usdt"]
+                ),
+            },
         )
     selection = screener_output.get("selection") if isinstance(screener_output, dict) else {}
     selected_symbol = _normalize_symbol((selection or {}).get("symbol"))
