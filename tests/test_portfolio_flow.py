@@ -16,6 +16,7 @@ def _config():
         "stop_loss_pct": 0.04,
         "capital_usage_ratio": 0.99,
         "rebalance_threshold_pct": 0.03,
+        "active_rescreen_interval_hours": 24,
         "ai_prompt_timeframe": "1h",
         "ai_prompt_candle_count": 168,
         "deepseek_model": "deepseek-v4-flash",
@@ -403,6 +404,8 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertEqual(active_symbol, "ETHUSDT")
         self.assertEqual(updated_state["symbol"], "ETHUSDT")
         self.assertEqual(updated_state["last_ai_decision"], "LONG")
+        self.assertEqual(updated_state["entered_at"], "1970-01-01T00:00:00Z")
+        self.assertEqual(updated_state["last_active_rank_checked_at"], "1970-01-01T00:00:00Z")
         mocked_ai.assert_not_called()
         mocked_rebalance.assert_not_called()
         self.assertEqual(result["leverage"], 2)
@@ -532,6 +535,8 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertEqual(result["screening_decision"], "SHORT")
         self.assertEqual(updated_state["symbol"], "BNBUSDT")
         self.assertEqual(updated_state["last_ai_decision"], "SHORT")
+        self.assertEqual(updated_state["entered_at"], "1970-01-01T00:00:00Z")
+        self.assertEqual(updated_state["last_active_rank_checked_at"], "1970-01-01T00:00:00Z")
         self.assertEqual(active_symbol, "BNBUSDT")
         mocked_ai.assert_not_called()
         mocked_place.assert_called_once()
@@ -579,6 +584,141 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertEqual(active_symbol, "SOLUSDT")
         self.assertEqual(updated_state, slot_state)
         mocked_ai.assert_not_called()
+
+    def test_active_due_rank_review_keeps_current_top_symbol(self):
+        slot = _active_slot()
+        slot_state = {
+            "slot_id": "active_1",
+            "kind": "active",
+            "symbol": "ETHUSDT",
+            "last_ai_decision": "LONG",
+            "entered_at": "1970-01-01T00:00:00Z",
+            "last_active_rank_checked_at": "1970-01-01T00:00:00Z",
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "src.strategy.portfolio_strategy._reference_price", return_value=101.0
+        ), patch(
+            "src.strategy.portfolio_strategy._screen_active_candidate",
+            return_value={
+                "symbol": "ETHUSDT",
+                "screening_decision": "LONG",
+                "screening_direction": "up",
+                "close_prices": [99.0, 100.0, 101.0],
+                "decision_source": "active_screener",
+                "selection": {"symbol": "ETHUSDT", "selected": {"symbol": "ETHUSDT"}},
+                "metadata": {},
+                "_screener_output": {"selection": {"symbol": "ETHUSDT"}},
+            },
+        ) as mocked_screen, patch(
+            "src.strategy.portfolio_strategy._close_existing_position"
+        ) as mocked_close, patch(
+            "src.strategy.portfolio_strategy._place_direction_position"
+        ) as mocked_place, patch(
+            "src.strategy.portfolio_strategy._sync_fixed_stop_loss",
+            return_value={"success": True, "changed": False, "stop_loss_pct": 0.04},
+        ) as mocked_stop:
+            notifications = []
+            result, updated_state, active_symbol = portfolio_strategy._run_active_slot(
+                slot=slot,
+                slot_state=slot_state,
+                config=_config(),
+                api_key="key",
+                api_secret="secret",
+                account_overview={"equity": 1000.0, "available_balance": 500.0},
+                open_positions=[_long_position()],
+                reserved_symbols={"CLUSDT"},
+                as_of_ms=(24 * 60 * 60 * 1000) + 1000,
+                cycle_dir_factory=lambda: temp_dir,
+                notification_callback=lambda event_name, payload: notifications.append((event_name, payload)),
+            )
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["screening_triggered"])
+        self.assertEqual(result["trigger_reason"], "active_rank_review_due")
+        self.assertEqual(result["action"], "active_rank_review_position_kept")
+        self.assertEqual(active_symbol, "ETHUSDT")
+        self.assertEqual(updated_state["symbol"], "ETHUSDT")
+        self.assertEqual(updated_state["entered_at"], "1970-01-01T00:00:00Z")
+        self.assertEqual(updated_state["last_active_rank_checked_at"], "1970-01-02T00:00:01Z")
+        mocked_screen.assert_called_once()
+        self.assertNotIn("ETHUSDT", mocked_screen.call_args.kwargs["excluded_symbols"])
+        mocked_close.assert_not_called()
+        mocked_place.assert_not_called()
+        mocked_stop.assert_called_once()
+        self.assertEqual([event_name for event_name, _ in notifications], ["active_screening_after"])
+
+    def test_active_due_rank_review_switches_to_new_top_symbol(self):
+        slot = _active_slot()
+        slot_state = {
+            "slot_id": "active_1",
+            "kind": "active",
+            "symbol": "ETHUSDT",
+            "last_ai_decision": "LONG",
+            "entered_at": "1970-01-01T00:00:00Z",
+            "last_active_rank_checked_at": "1970-01-01T00:00:00Z",
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "src.strategy.portfolio_strategy._reference_price",
+            side_effect=[101.0, 55.0],
+        ), patch(
+            "src.strategy.portfolio_strategy._screen_active_candidate",
+            return_value={
+                "symbol": "SOLUSDT",
+                "screening_decision": "SHORT",
+                "screening_direction": "down",
+                "close_prices": [60.0, 58.0, 55.0],
+                "decision_source": "active_screener",
+                "selection": {"symbol": "SOLUSDT", "selected": {"symbol": "SOLUSDT"}},
+                "metadata": {},
+                "_screener_output": {"selection": {"symbol": "SOLUSDT"}},
+            },
+        ) as mocked_screen, patch(
+            "src.strategy.portfolio_strategy._close_existing_position",
+            return_value={"success": True, "action": "closed_position", "symbol": "ETHUSDT"},
+        ) as mocked_close, patch(
+            "src.strategy.portfolio_strategy.get_account_overview",
+            return_value={"equity": 1000.0, "available_balance": 500.0},
+        ), patch(
+            "src.strategy.portfolio_strategy._place_direction_position",
+            return_value={"success": True, "action": "opened_new_position", "position": {"symbol": "SOLUSDT"}},
+        ) as mocked_place, patch(
+            "src.strategy.portfolio_strategy._sync_position_after_trade",
+            return_value={"position": {"symbol": "SOLUSDT"}, "stop_sync": {"success": True}},
+        ):
+            notifications = []
+            result, updated_state, active_symbol = portfolio_strategy._run_active_slot(
+                slot=slot,
+                slot_state=slot_state,
+                config=_config(),
+                api_key="key",
+                api_secret="secret",
+                account_overview={"equity": 1000.0, "available_balance": 500.0},
+                open_positions=[_long_position()],
+                reserved_symbols={"CLUSDT"},
+                as_of_ms=(24 * 60 * 60 * 1000) + 1000,
+                cycle_dir_factory=lambda: temp_dir,
+                notification_callback=lambda event_name, payload: notifications.append((event_name, payload)),
+            )
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["screening_triggered"])
+        self.assertEqual(result["action"], "switched_active_position_by_rank")
+        self.assertEqual(result["previous_symbol"], "ETHUSDT")
+        self.assertEqual(result["candidate_symbol"], "SOLUSDT")
+        self.assertEqual(active_symbol, "SOLUSDT")
+        self.assertEqual(updated_state["symbol"], "SOLUSDT")
+        self.assertEqual(updated_state["last_ai_decision"], "SHORT")
+        self.assertEqual(updated_state["entered_at"], "1970-01-02T00:00:01Z")
+        self.assertEqual(updated_state["last_active_rank_checked_at"], "1970-01-02T00:00:01Z")
+        mocked_screen.assert_called_once()
+        self.assertNotIn("ETHUSDT", mocked_screen.call_args.kwargs["excluded_symbols"])
+        mocked_close.assert_called_once()
+        mocked_place.assert_called_once()
+        self.assertEqual(mocked_place.call_args.kwargs["symbol"], "SOLUSDT")
+        self.assertEqual(mocked_place.call_args.kwargs["decision"], "SHORT")
+        self.assertEqual([event_name for event_name, _ in notifications], ["active_screening_after"])
 
     def test_active_existing_position_does_not_close_or_switch_on_price_trigger(self):
         slot = _active_slot()

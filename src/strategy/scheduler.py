@@ -39,6 +39,7 @@ TRIGGER_REASON_LABELS = {
     "price_distance_reached": "Price distance reached",
     "waiting_for_next_price_trigger": "Waiting for next price level",
     "active_candidate_selected": "Active candidate selected",
+    "active_rank_review_due": "Active 24h rank review due",
 }
 
 ACTION_LABELS = {
@@ -48,7 +49,10 @@ ACTION_LABELS = {
     "kept_position_by_ai": "Position kept by AI",
     "kept_position_by_screening": "Position kept by screening",
     "kept_active_position_until_stop_loss": "Active position held until stop-loss",
+    "active_rank_review_failed_position_kept": "Active rank review failed, position kept",
+    "active_rank_review_position_kept": "Active position kept by rank",
     "opened_new_position": "Opened new position",
+    "switched_active_position_by_rank": "Switched active position by rank",
     "reversed_position": "Reversed position",
     "increased_position": "Increased position",
     "reduced_position": "Reduced position",
@@ -56,8 +60,10 @@ ACTION_LABELS = {
     "screener_selection_failed": "Active screener failed",
     "candidate_screening_direction_unavailable": "Candidate screening direction unavailable",
     "ai_decision_failed": "AI decision failed",
+    "switch_close_failed": "Active rank switch close failed",
     "entry_order_failed": "Entry order failed",
     "stop_loss_sync_failed": "Stop-loss sync failed",
+    "active_rank_switch_entry_failed": "Active rank switch entry failed",
     "reference_price_unavailable": "Reference price unavailable",
 }
 
@@ -358,6 +364,12 @@ class TradingScheduler:
                     self._format_html_line("Mode", (screener.get("metadata") or {}).get("screening_mode"), code=True)
                     if isinstance(screener.get("metadata"), dict)
                     else "",
+                    self._format_html_line("Previous", payload.get("previous_symbol"), code=True)
+                    if payload.get("previous_symbol")
+                    else "",
+                    self._format_html_line("Candidate", payload.get("candidate_symbol"), code=True)
+                    if payload.get("candidate_symbol")
+                    else "",
                     self._format_html_line("Rank Metric", selection.get("ranking_metric"), code=True),
                     self._format_html_line("Range", self._format_float(selected.get("close_range_volatility_pct"), 2) + "%"),
                     self._format_html_line("Net Return", self._format_float(selected.get("net_return_pct"), 2) + "%"),
@@ -380,6 +392,14 @@ class TradingScheduler:
                 [
                     self._format_html_line("Before", self._format_position_summary(payload.get("position_before"))),
                     self._format_html_line("After", self._format_position_summary(payload.get("position"))),
+                    self._format_html_line("Entered At", self._format_timestamp(payload.get("entered_at")))
+                    if payload.get("entered_at")
+                    else "",
+                    self._format_html_line(
+                        "Rank Checked At", self._format_timestamp(payload.get("last_active_rank_checked_at"))
+                    )
+                    if payload.get("last_active_rank_checked_at")
+                    else "",
                 ],
                 True,
             ),

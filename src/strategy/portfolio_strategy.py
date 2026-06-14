@@ -8,6 +8,7 @@ import os
 import shutil
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional, Sequence
 
 from src.ai.deepseek_trader import evaluate_trade_direction
@@ -36,6 +37,7 @@ from src.strategy.runtime_config import (
     DEFAULT_AI_PROMPT_CANDLE_COUNT,
     DEFAULT_AI_PROMPT_TIMEFRAME,
     DEFAULT_ACTIVE_LEVERAGE,
+    DEFAULT_ACTIVE_RESCREEN_INTERVAL_HOURS,
     DEFAULT_CAPITAL_USAGE_RATIO,
     DEFAULT_FIXED_LEVERAGE,
     DEFAULT_PASSIVE_LEVERAGE,
@@ -59,6 +61,9 @@ STATE_VERSION = "1.0.0"
 TRIGGER_PRICE_DIGITS = 8
 MANAGED_DECISIONS = {"LONG", "SHORT"}
 MATERIAL_POSITION_RECORD_ACTIONS = {
+    "active_rank_review_failed_position_kept",
+    "active_rank_switch_entry_failed",
+    "active_rank_review_position_kept",
     "closed_position",
     "entry_order_failed",
     "increased_position",
@@ -71,6 +76,7 @@ MATERIAL_POSITION_RECORD_ACTIONS = {
     "invalid_symbol_for_leverage",
     "set_leverage_failed",
     "switch_close_failed",
+    "switched_active_position_by_rank",
 }
 NotificationCallback = Optional[Callable[[str, Dict[str, Any]], None]]
 CycleDirFactory = Callable[[], str]
@@ -203,6 +209,10 @@ def _load_strategy_config() -> Dict[str, Any]:
             raw.get("rebalance_threshold_pct", DEFAULT_REBALANCE_THRESHOLD_PCT),
             DEFAULT_REBALANCE_THRESHOLD_PCT,
         ),
+        "active_rescreen_interval_hours": _normalize_positive_float(
+            raw.get("active_rescreen_interval_hours", DEFAULT_ACTIVE_RESCREEN_INTERVAL_HOURS),
+            DEFAULT_ACTIVE_RESCREEN_INTERVAL_HOURS,
+        ),
         "ai_prompt_timeframe": str(
             raw.get("ai_prompt_timeframe", DEFAULT_AI_PROMPT_TIMEFRAME) or DEFAULT_AI_PROMPT_TIMEFRAME
         ).strip()
@@ -300,6 +310,24 @@ def _current_time_ms() -> int:
 def _resolve_as_of_ms(as_of_ms: Optional[int]) -> int:
     resolved = _safe_int(as_of_ms, 0)
     return resolved if resolved > 0 else _current_time_ms()
+
+
+def _utc_iso_from_ms(as_of_ms: Optional[int]) -> str:
+    resolved = _resolve_as_of_ms(as_of_ms)
+    return datetime.fromtimestamp(resolved / 1000.0, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_utc_iso_ms(value: Any) -> Optional[int]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp() * 1000)
 
 
 def _normalize_trigger_price(value: Any) -> Optional[float]:
@@ -576,7 +604,7 @@ def _determine_ai_trigger(
 
 
 def _empty_slot_state(slot: PortfolioSlot) -> Dict[str, Any]:
-    return {
+    state = {
         "slot_id": slot.slot_id,
         "kind": slot.kind,
         "symbol": slot.symbol if slot.kind == "passive" else None,
@@ -586,12 +614,25 @@ def _empty_slot_state(slot: PortfolioSlot) -> Dict[str, Any]:
         "next_trigger_down": None,
         "next_trigger_up": None,
     }
+    if slot.kind == "active":
+        state["entered_at"] = None
+        state["last_active_rank_checked_at"] = None
+    return state
 
 
 def _normalize_slot_state(slot: PortfolioSlot, raw_state: Any) -> Dict[str, Any]:
     state = _empty_slot_state(slot)
     if isinstance(raw_state, dict):
-        for key in ("last_ai_trigger_price", "last_ai_triggered_at", "last_ai_decision", "next_trigger_down", "next_trigger_up"):
+        preserved_keys = [
+            "last_ai_trigger_price",
+            "last_ai_triggered_at",
+            "last_ai_decision",
+            "next_trigger_down",
+            "next_trigger_up",
+        ]
+        if slot.kind == "active":
+            preserved_keys.extend(["entered_at", "last_active_rank_checked_at"])
+        for key in preserved_keys:
             if key in raw_state:
                 state[key] = raw_state.get(key)
         if slot.kind == "active":
@@ -658,6 +699,71 @@ def _clear_active_slot_state(slot_state: Dict[str, Any]) -> Dict[str, Any]:
     updated["last_ai_decision"] = None
     updated["next_trigger_down"] = None
     updated["next_trigger_up"] = None
+    updated["entered_at"] = None
+    updated["last_active_rank_checked_at"] = None
+    return updated
+
+
+def _active_rescreen_interval_ms(config: Dict[str, Any]) -> int:
+    hours = _normalize_positive_float(
+        config.get("active_rescreen_interval_hours", DEFAULT_ACTIVE_RESCREEN_INTERVAL_HOURS),
+        DEFAULT_ACTIVE_RESCREEN_INTERVAL_HOURS,
+    )
+    return max(1, int(hours * 60.0 * 60.0 * 1000.0))
+
+
+def _active_rank_review_reference_ms(slot_state: Dict[str, Any]) -> Optional[int]:
+    return _parse_utc_iso_ms(slot_state.get("last_active_rank_checked_at")) or _parse_utc_iso_ms(
+        slot_state.get("entered_at")
+    )
+
+
+def _active_rank_review_due(
+    slot_state: Dict[str, Any],
+    *,
+    config: Dict[str, Any],
+    as_of_ms: int,
+) -> bool:
+    reference_ms = _active_rank_review_reference_ms(slot_state)
+    if reference_ms is None:
+        return False
+    elapsed_ms = max(0, int(as_of_ms) - int(reference_ms))
+    return elapsed_ms >= _active_rescreen_interval_ms(config)
+
+
+def _ensure_active_entry_timestamp(
+    slot_state: Dict[str, Any],
+    *,
+    as_of_ms: int,
+) -> tuple[Dict[str, Any], bool]:
+    if str(slot_state.get("entered_at") or "").strip():
+        return dict(slot_state), False
+    now_iso = _utc_iso_from_ms(as_of_ms)
+    updated = dict(slot_state)
+    updated["entered_at"] = now_iso
+    updated["last_active_rank_checked_at"] = now_iso
+    return updated, True
+
+
+def _mark_active_rank_checked(
+    slot_state: Dict[str, Any],
+    *,
+    as_of_ms: int,
+) -> Dict[str, Any]:
+    updated = dict(slot_state)
+    updated["last_active_rank_checked_at"] = _utc_iso_from_ms(as_of_ms)
+    return updated
+
+
+def _mark_active_entry_opened(
+    slot_state: Dict[str, Any],
+    *,
+    as_of_ms: int,
+) -> Dict[str, Any]:
+    now_iso = _utc_iso_from_ms(as_of_ms)
+    updated = dict(slot_state)
+    updated["entered_at"] = now_iso
+    updated["last_active_rank_checked_at"] = now_iso
     return updated
 
 
@@ -1328,6 +1434,8 @@ def _emit_active_screening_after(
             "slot_label": slot.label,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "symbol": result.get("symbol") or candidate.get("symbol"),
+            "candidate_symbol": result.get("candidate_symbol") or candidate.get("symbol"),
+            "previous_symbol": result.get("previous_symbol"),
             "current_price": reference_price,
             "trigger_reason": trigger_info.get("reason"),
             "trigger_price": trigger_info.get("trigger_price"),
@@ -1344,6 +1452,8 @@ def _emit_active_screening_after(
             "position": result.get("position"),
             "position_before": calculate_position_metrics(position_before) if isinstance(position_before, dict) else None,
             "screener": result.get("screener"),
+            "entered_at": result.get("entered_at"),
+            "last_active_rank_checked_at": result.get("last_active_rank_checked_at"),
             "ai_prompt_timeframe": str(config.get("ai_prompt_timeframe") or DEFAULT_AI_PROMPT_TIMEFRAME),
             "ai_prompt_candle_count": int(config.get("ai_prompt_candle_count") or DEFAULT_AI_PROMPT_CANDLE_COUNT),
             "close_prices": _active_screening_close_prices(candidate, reference_price),
@@ -1523,7 +1633,12 @@ def _slot_result_base(slot: PortfolioSlot, symbol: Optional[str]) -> Dict[str, A
         "position": None,
         "position_before": None,
         "execution": None,
+        "close": None,
         "screener": None,
+        "candidate_symbol": None,
+        "previous_symbol": None,
+        "entered_at": None,
+        "last_active_rank_checked_at": None,
     }
 
 
@@ -1708,14 +1823,16 @@ def _active_exclusions(
     open_positions: Sequence[Dict[str, Any]],
     reserved_symbols: set[str],
     old_symbol: Optional[str] = None,
+    allowed_symbol: Optional[str] = None,
 ) -> list[str]:
+    allowed = _normalize_symbol(allowed_symbol)
     excluded = set(config["passive_symbols"])
-    excluded.update(reserved_symbols)
+    excluded.update(symbol for symbol in reserved_symbols if _normalize_symbol(symbol) != allowed)
     for position in open_positions:
         symbol = _position_symbol(position)
-        if symbol:
+        if symbol and symbol != allowed:
             excluded.add(symbol)
-    if old_symbol:
+    if old_symbol and _normalize_symbol(old_symbol) != allowed:
         excluded.add(old_symbol)
     return sorted(excluded)
 
@@ -1775,20 +1892,273 @@ def _run_active_slot(
         reference_price = _reference_price(current_symbol)
         result["symbol"] = current_symbol
         result["current_price"] = reference_price
-        stop_sync = _sync_fixed_stop_loss(
+        tracked_state, backfilled_entry_time = _ensure_active_entry_timestamp(slot_state, as_of_ms=as_of_ms)
+        tracked_state["symbol"] = current_symbol
+        result["entered_at"] = tracked_state.get("entered_at")
+        result["last_active_rank_checked_at"] = tracked_state.get("last_active_rank_checked_at")
+
+        if backfilled_entry_time or not _active_rank_review_due(tracked_state, config=config, as_of_ms=as_of_ms):
+            stop_sync = _sync_fixed_stop_loss(
+                api_key=api_key,
+                api_secret=api_secret,
+                symbol=current_symbol,
+                position=position,
+                stop_loss_pct=float(config["stop_loss_pct"]),
+            )
+            result["position"] = calculate_position_metrics(position)
+            result["stop_sync"] = stop_sync
+            result["success"] = bool(stop_sync.get("success"))
+            result["action"] = "kept_active_position_until_stop_loss" if result["success"] else "stop_loss_sync_failed"
+            updated_state = dict(tracked_state)
+            updated_state["symbol"] = current_symbol
+            return result, updated_state, current_symbol
+
+        trigger_info = {
+            "should_trigger": True,
+            "reason": "active_rank_review_due",
+            "trigger_price": _normalize_trigger_price(reference_price),
+            "next_trigger_down": None,
+            "next_trigger_up": None,
+        }
+        result.update(
+            {
+                "trigger_reason": trigger_info.get("reason"),
+                "trigger_price": trigger_info.get("trigger_price"),
+                "next_trigger_down": trigger_info.get("next_trigger_down"),
+                "next_trigger_up": trigger_info.get("next_trigger_up"),
+            }
+        )
+        try:
+            candidate = _screen_active_candidate(
+                slot=slot,
+                config=config,
+                excluded_symbols=_active_exclusions(
+                    config=config,
+                    open_positions=open_positions,
+                    reserved_symbols=reserved_symbols,
+                    allowed_symbol=current_symbol,
+                ),
+            )
+        except NoActiveCandidateError as exc:
+            stop_sync = _sync_fixed_stop_loss(
+                api_key=api_key,
+                api_secret=api_secret,
+                symbol=current_symbol,
+                position=position,
+                stop_loss_pct=float(config["stop_loss_pct"]),
+            )
+            result["position"] = calculate_position_metrics(position)
+            result["stop_sync"] = stop_sync
+            result["success"] = bool(stop_sync.get("success"))
+            result["action"] = (
+                "active_rank_review_failed_position_kept" if result["success"] else "stop_loss_sync_failed"
+            )
+            result["error"] = str(exc)
+            updated_state = dict(tracked_state)
+            updated_state["symbol"] = current_symbol
+            return result, updated_state, current_symbol
+        except Exception as exc:
+            stop_sync = _sync_fixed_stop_loss(
+                api_key=api_key,
+                api_secret=api_secret,
+                symbol=current_symbol,
+                position=position,
+                stop_loss_pct=float(config["stop_loss_pct"]),
+            )
+            result["position"] = calculate_position_metrics(position)
+            result["stop_sync"] = stop_sync
+            result["success"] = bool(stop_sync.get("success"))
+            result["action"] = (
+                "active_rank_review_failed_position_kept" if result["success"] else "stop_loss_sync_failed"
+            )
+            result["error"] = str(exc)
+            updated_state = dict(tracked_state)
+            updated_state["symbol"] = current_symbol
+            return result, updated_state, current_symbol
+
+        candidate_symbol = str(candidate["symbol"])
+        screener_output = candidate.get("_screener_output")
+        result["previous_symbol"] = current_symbol
+        result["candidate_symbol"] = candidate_symbol
+        result["screener"] = _visible_active_candidate(candidate)
+        slot_dir = _slot_artifact_dir(cycle_dir_factory(), slot.slot_id)
+        if isinstance(screener_output, dict):
+            _persist_screener_output(slot_dir, screener_output)
+        decision = _apply_active_screening_decision(result, candidate)
+        if decision is None:
+            stop_sync = _sync_fixed_stop_loss(
+                api_key=api_key,
+                api_secret=api_secret,
+                symbol=current_symbol,
+                position=position,
+                stop_loss_pct=float(config["stop_loss_pct"]),
+            )
+            result["position"] = calculate_position_metrics(position)
+            result["stop_sync"] = stop_sync
+            result["success"] = bool(stop_sync.get("success"))
+            result["action"] = (
+                "active_rank_review_failed_position_kept" if result["success"] else "stop_loss_sync_failed"
+            )
+            updated_state = dict(tracked_state)
+            updated_state["symbol"] = current_symbol
+            return result, updated_state, current_symbol
+
+        if candidate_symbol == current_symbol:
+            stop_sync = _sync_fixed_stop_loss(
+                api_key=api_key,
+                api_secret=api_secret,
+                symbol=current_symbol,
+                position=position,
+                stop_loss_pct=float(config["stop_loss_pct"]),
+            )
+            result["position"] = calculate_position_metrics(position)
+            result["stop_sync"] = stop_sync
+            result["success"] = bool(stop_sync.get("success"))
+            result["action"] = "active_rank_review_position_kept" if result["success"] else "stop_loss_sync_failed"
+            updated_state = _mark_active_rank_checked(tracked_state, as_of_ms=as_of_ms)
+            updated_state["symbol"] = current_symbol
+            result["last_active_rank_checked_at"] = updated_state.get("last_active_rank_checked_at")
+            _emit_active_screening_after(
+                notification_callback=notification_callback,
+                slot=slot,
+                candidate=candidate,
+                result=result,
+                reference_price=reference_price,
+                trigger_info=trigger_info,
+                config=config,
+                position_before=position,
+            )
+            return result, updated_state, current_symbol
+
+        candidate_reference_price = _reference_price(candidate_symbol)
+        result["symbol"] = candidate_symbol
+        result["current_price"] = candidate_reference_price
+        if candidate_reference_price is None:
+            stop_sync = _sync_fixed_stop_loss(
+                api_key=api_key,
+                api_secret=api_secret,
+                symbol=current_symbol,
+                position=position,
+                stop_loss_pct=float(config["stop_loss_pct"]),
+            )
+            result["position"] = calculate_position_metrics(position)
+            result["stop_sync"] = stop_sync
+            result["success"] = bool(stop_sync.get("success"))
+            result["action"] = (
+                "active_rank_review_failed_position_kept" if result["success"] else "stop_loss_sync_failed"
+            )
+            result["error"] = "candidate_reference_price_unavailable"
+            updated_state = dict(tracked_state)
+            updated_state["symbol"] = current_symbol
+            _emit_active_screening_after(
+                notification_callback=notification_callback,
+                slot=slot,
+                candidate=candidate,
+                result=result,
+                reference_price=candidate_reference_price,
+                trigger_info=trigger_info,
+                config=config,
+                position_before=position,
+            )
+            return result, updated_state, current_symbol
+
+        close_result = _close_existing_position(
             api_key=api_key,
             api_secret=api_secret,
-            symbol=current_symbol,
             position=position,
-            stop_loss_pct=float(config["stop_loss_pct"]),
+            context="active_rank_review_switch",
         )
-        result["position"] = calculate_position_metrics(position)
-        result["stop_sync"] = stop_sync
-        result["success"] = bool(stop_sync.get("success"))
-        result["action"] = "kept_active_position_until_stop_loss" if result["success"] else "stop_loss_sync_failed"
-        updated_state = dict(slot_state)
-        updated_state["symbol"] = current_symbol
-        return result, updated_state, current_symbol
+        result["close"] = close_result
+        if not bool(close_result.get("success")):
+            stop_sync = _sync_fixed_stop_loss(
+                api_key=api_key,
+                api_secret=api_secret,
+                symbol=current_symbol,
+                position=position,
+                stop_loss_pct=float(config["stop_loss_pct"]),
+            )
+            result["position"] = calculate_position_metrics(position)
+            result["stop_sync"] = stop_sync
+            result["success"] = False
+            result["action"] = "switch_close_failed"
+            updated_state = dict(tracked_state)
+            updated_state["symbol"] = current_symbol
+            _emit_active_screening_after(
+                notification_callback=notification_callback,
+                slot=slot,
+                candidate=candidate,
+                result=result,
+                reference_price=candidate_reference_price,
+                trigger_info=trigger_info,
+                config=config,
+                position_before=position,
+            )
+            return result, updated_state, current_symbol
+
+        fresh_overview = get_account_overview(api_key, api_secret) or account_overview
+        available_cap = _available_notional_cap(
+            available_balance=float(fresh_overview.get("available_balance", account_overview.get("available_balance", 0.0))),
+            capital_usage_ratio=float(config["capital_usage_ratio"]),
+            leverage=leverage,
+        )
+        execution = _place_direction_position(
+            api_key=api_key,
+            api_secret=api_secret,
+            symbol=candidate_symbol,
+            decision=decision,
+            target_notional_usdt=target_notional,
+            reference_price=candidate_reference_price,
+            leverage=leverage,
+            available_notional_cap=available_cap,
+        )
+        entry_opened = bool(execution.get("success")) and str(execution.get("action") or "") == "opened_new_position"
+        if entry_opened:
+            _merge_post_trade_sync_result(
+                execution,
+                _sync_position_after_trade(
+                    api_key=api_key,
+                    api_secret=api_secret,
+                    symbol=candidate_symbol,
+                    stop_loss_pct=float(config["stop_loss_pct"]),
+                    expected_decision=decision,
+                ),
+            )
+        result["execution"] = execution
+        result["stop_sync"] = execution.get("stop_sync")
+        result["position"] = execution.get("position")
+        if entry_opened and bool(execution.get("success")):
+            result["success"] = True
+            result["action"] = "switched_active_position_by_rank"
+            updated_state = _update_slot_trigger_state(
+                _mark_active_entry_opened(_clear_active_slot_state(tracked_state), as_of_ms=as_of_ms),
+                ai_triggered=False,
+                trigger_info=trigger_info,
+                ai_decision=decision,
+                symbol=candidate_symbol,
+                update_anchor=True,
+            )
+            reserved_symbol = candidate_symbol
+        else:
+            execution["action"] = str(execution.get("action") or "active_rank_switch_entry_failed")
+            if str(execution.get("action")) == "skipped_entry_below_min_notional":
+                execution["action"] = "active_rank_switch_entry_failed"
+            result["success"] = False
+            result["action"] = "active_rank_switch_entry_failed"
+            updated_state = _clear_active_slot_state(tracked_state)
+            reserved_symbol = None
+        result["last_active_rank_checked_at"] = updated_state.get("last_active_rank_checked_at")
+        result["entered_at"] = updated_state.get("entered_at")
+        _emit_active_screening_after(
+            notification_callback=notification_callback,
+            slot=slot,
+            candidate=candidate,
+            result=result,
+            reference_price=candidate_reference_price,
+            trigger_info=trigger_info,
+            config=config,
+            position_before=position,
+        )
+        return result, updated_state, reserved_symbol
 
     if candidate is None:
         try:
@@ -1876,14 +2246,20 @@ def _run_active_slot(
     result["action"] = str(execution.get("action") or "execution_failed")
     result["position"] = execution.get("position")
     result["stop_sync"] = execution.get("stop_sync")
+    opened_active_position = result["success"] and str(result["action"]) == "opened_new_position"
+    base_active_state = _clear_active_slot_state(slot_state)
+    if opened_active_position:
+        base_active_state = _mark_active_entry_opened(base_active_state, as_of_ms=as_of_ms)
     updated_state = _update_slot_trigger_state(
-        _clear_active_slot_state(slot_state),
+        base_active_state,
         ai_triggered=False,
         trigger_info=trigger_info,
         ai_decision=decision,
-        symbol=candidate_symbol if result["success"] else None,
+        symbol=candidate_symbol if opened_active_position else None,
         update_anchor=True,
     )
+    result["entered_at"] = updated_state.get("entered_at")
+    result["last_active_rank_checked_at"] = updated_state.get("last_active_rank_checked_at")
     _emit_active_screening_after(
         notification_callback=notification_callback,
         slot=slot,
@@ -1925,6 +2301,7 @@ def run_portfolio_cycle(
             "capital_usage_ratio": config["capital_usage_ratio"],
             "trigger_pct_usdt": config["trigger_pct_usdt"],
             "stop_loss_pct": config["stop_loss_pct"],
+            "active_rescreen_interval_hours": config["active_rescreen_interval_hours"],
             "passive_symbols": list(config["passive_symbols"]),
             "ai_prompt_timeframe": config["ai_prompt_timeframe"],
             "ai_prompt_candle_count": config["ai_prompt_candle_count"],
