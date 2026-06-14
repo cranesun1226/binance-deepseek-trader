@@ -32,7 +32,7 @@ active_rescreen_interval_hours: 24
 # Passive slots are evaluated in this exact priority order.
 passive_symbols:
   - CLUSDT
-  - XAUUSDT
+  - COPPERUSDT
   - QQQUSDT
   - BTCUSDT
 

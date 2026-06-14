@@ -23,7 +23,7 @@ def _config():
         "deepseek_reasoning_effort": "max",
         "deepseek_max_tokens": 8192,
         "deepseek_timeout_seconds": 300.0,
-        "passive_symbols": ["CLUSDT", "XAUUSDT", "QQQUSDT", "BTCUSDT"],
+        "passive_symbols": ["CLUSDT", "COPPERUSDT", "QQQUSDT", "BTCUSDT"],
         "screener_quote": "USDT",
         "screener_timeout": 30.0,
         "screener_retries": 3,

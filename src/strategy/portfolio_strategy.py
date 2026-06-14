@@ -242,7 +242,7 @@ def _load_strategy_config() -> Dict[str, Any]:
 
 def _build_portfolio_slots(config: Dict[str, Any]) -> list[PortfolioSlot]:
     passive_symbols = list(config["passive_symbols"])
-    passive_labels = ["passive_cl", "passive_xau", "passive_qqq", "passive_btc"]
+    passive_labels = ["passive_cl", "passive_copper", "passive_qqq", "passive_btc"]
     slots = [
         PortfolioSlot(
             slot_id=slot_id,

@@ -7,14 +7,14 @@ from src.strategy import portfolio_strategy
 class PortfolioHelperTests(unittest.TestCase):
     def test_default_config_builds_eight_slots_in_priority_order(self):
         config = {
-            "passive_symbols": ["CLUSDT", "XAUUSDT", "QQQUSDT", "BTCUSDT"],
+            "passive_symbols": ["CLUSDT", "COPPERUSDT", "QQQUSDT", "BTCUSDT"],
         }
 
         slots = portfolio_strategy._build_portfolio_slots(config)
 
         self.assertEqual([slot.slot_id for slot in slots], [
             "passive_cl",
-            "passive_xau",
+            "passive_copper",
             "passive_qqq",
             "passive_btc",
             "active_1",
@@ -22,7 +22,7 @@ class PortfolioHelperTests(unittest.TestCase):
             "active_3",
             "active_4",
         ])
-        self.assertEqual([slot.symbol for slot in slots[:4]], ["CLUSDT", "XAUUSDT", "QQQUSDT", "BTCUSDT"])
+        self.assertEqual([slot.symbol for slot in slots[:4]], ["CLUSDT", "COPPERUSDT", "QQQUSDT", "BTCUSDT"])
         self.assertEqual([slot.target_margin_ratio for slot in slots], [0.125] * 8)
         self.assertEqual(slots[4].active_screening_mode, "crypto")
         self.assertEqual(slots[5].active_screening_mode, "tradfi")
@@ -295,7 +295,7 @@ class PortfolioHelperTests(unittest.TestCase):
 
     def test_duplicate_active_state_symbol_is_cleared_for_later_slot(self):
         config = {
-            "passive_symbols": ["CLUSDT", "XAUUSDT", "QQQUSDT", "BTCUSDT"],
+            "passive_symbols": ["CLUSDT", "COPPERUSDT", "QQQUSDT", "BTCUSDT"],
         }
         slots = portfolio_strategy._build_portfolio_slots(config)
         state = portfolio_strategy._normalize_portfolio_state(
@@ -314,7 +314,7 @@ class PortfolioHelperTests(unittest.TestCase):
 
     def test_active_recent_symbols_are_grouped_by_screening_universe(self):
         config = {
-            "passive_symbols": ["CLUSDT", "XAUUSDT", "QQQUSDT", "BTCUSDT"],
+            "passive_symbols": ["CLUSDT", "COPPERUSDT", "QQQUSDT", "BTCUSDT"],
         }
         slots = portfolio_strategy._build_portfolio_slots(config)
         state = portfolio_strategy._normalize_portfolio_state(

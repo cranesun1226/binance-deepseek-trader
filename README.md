@@ -15,7 +15,7 @@ This project runs an eight-slot portfolio loop across four fixed 2x-leverage pas
   - reasoning effort: `max` (`xhigh` legacy values are normalized to `max`; `low`/`medium` map to `high`)
   - DeepSeek JSON Output 응답을 로컬에서 검증해 `LONG` 또는 `SHORT`만 허용
 - 8개 슬롯 포트폴리오
-  - Passive: `CLUSDT`, `XAUUSDT`, `QQQUSDT`, `BTCUSDT`
+  - Passive: `CLUSDT`, `COPPERUSDT`, `QQQUSDT`, `BTCUSDT`
   - Active 1, 3: 168개 종가 range volatility가 가장 큰 crypto USDT-M perpetual, 종가 구간 방향으로 LONG/SHORT 결정
   - Active 2, 4: 168개 종가 range volatility가 가장 큰 TradFi USDT-M perpetual, 종가 구간 방향으로 LONG/SHORT 결정
 - 자산 배분
@@ -102,7 +102,7 @@ stop_loss_pct: 0.04
 active_rescreen_interval_hours: 24
 passive_symbols:
   - CLUSDT
-  - XAUUSDT
+  - COPPERUSDT
   - QQQUSDT
   - BTCUSDT
 # Active candidates are ranked by close_range_volatility over
@@ -230,7 +230,7 @@ python -m py_compile main.py src/ai/deepseek_trader.py src/strategy/portfolio_st
   - Reasoning effort: `max` (`xhigh` legacy values are normalized to `max`; `low`/`medium` map to `high`)
   - DeepSeek JSON Output is locally validated to accept only `LONG` or `SHORT`
 - Eight-slot portfolio
-  - Passive: `CLUSDT`, `XAUUSDT`, `QQQUSDT`, `BTCUSDT`
+  - Passive: `CLUSDT`, `COPPERUSDT`, `QQQUSDT`, `BTCUSDT`
   - Active 1 and 3: crypto USDT-M perpetuals with the largest 168-close range volatility, LONG/SHORT from the close-window direction
   - Active 2 and 4: TradFi USDT-M perpetuals with the largest 168-close range volatility, LONG/SHORT from the close-window direction
 - Allocation
@@ -317,7 +317,7 @@ stop_loss_pct: 0.04
 active_rescreen_interval_hours: 24
 passive_symbols:
   - CLUSDT
-  - XAUUSDT
+  - COPPERUSDT
   - QQQUSDT
   - BTCUSDT
 # Active candidates are ranked by close_range_volatility over
