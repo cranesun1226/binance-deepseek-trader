@@ -280,6 +280,7 @@ def calculate_close_range_volatility_metrics(symbol: str, close_prices: Sequence
     return {
         "symbol": normalized_symbol,
         "close_count": len(prices),
+        "close_prices": list(prices),
         "first_close": first_close,
         "last_close": last_close,
         "min_close": min_close,

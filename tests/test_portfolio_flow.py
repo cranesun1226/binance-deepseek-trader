@@ -491,6 +491,7 @@ class PortfolioFlowTests(unittest.TestCase):
                 "symbol": "BNBUSDT",
                 "screening_decision": "SHORT",
                 "screening_direction": "down",
+                "close_prices": [210.0, 205.0, 200.0],
                 "decision_source": "active_screener",
                 "selection": {},
                 "metadata": {},
@@ -507,6 +508,7 @@ class PortfolioFlowTests(unittest.TestCase):
             "src.strategy.portfolio_strategy._sync_position_after_trade",
             return_value={"position": {"symbol": "BNBUSDT"}, "stop_sync": {"success": True}},
         ):
+            notifications = []
             result, updated_state, active_symbol = portfolio_strategy._run_active_slot(
                 slot=slot,
                 slot_state=slot_state,
@@ -518,7 +520,7 @@ class PortfolioFlowTests(unittest.TestCase):
                 reserved_symbols=set(),
                 as_of_ms=1,
                 cycle_dir_factory=lambda: temp_dir,
-                notification_callback=None,
+                notification_callback=lambda event_name, payload: notifications.append((event_name, payload)),
             )
 
         self.assertTrue(result["success"])
@@ -531,6 +533,13 @@ class PortfolioFlowTests(unittest.TestCase):
         mocked_ai.assert_not_called()
         mocked_place.assert_called_once()
         self.assertEqual(mocked_place.call_args.kwargs["decision"], "SHORT")
+        self.assertEqual([event_name for event_name, _ in notifications], ["active_screening_after"])
+        active_payload = notifications[0][1]
+        self.assertEqual(active_payload["symbol"], "BNBUSDT")
+        self.assertEqual(active_payload["screening_decision"], "SHORT")
+        self.assertEqual(active_payload["decision_source"], "active_screener")
+        self.assertEqual(active_payload["close_prices"], [210.0, 205.0, 200.0])
+        self.assertEqual(active_payload["execution"]["action"], "opened_new_position")
 
     def test_active_candidate_without_screening_direction_still_reserves_candidate_for_cycle(self):
         slot = _active_slot()

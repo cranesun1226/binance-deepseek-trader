@@ -1270,6 +1270,7 @@ def _screen_active_candidate(
             (selection or {}).get("screening_direction") or selected.get("screening_direction") or ""
         ).strip().lower()
         or None,
+        "close_prices": list(selected.get("close_prices") or []),
         "decision_source": "active_screener",
         "selection": selection,
         "metadata": screener_output.get("metadata", {}),
@@ -1290,6 +1291,64 @@ def _apply_active_screening_decision(result: Dict[str, Any], candidate: Dict[str
 
 def _visible_active_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
     return {key: value for key, value in dict(candidate or {}).items() if key != "_screener_output"}
+
+
+def _active_screening_close_prices(candidate: Dict[str, Any], reference_price: Optional[float]) -> list[float]:
+    values = candidate.get("close_prices")
+    if not isinstance(values, (list, tuple)) or isinstance(values, (str, bytes)):
+        selected = (candidate.get("selection") or {}).get("selected") if isinstance(candidate.get("selection"), dict) else {}
+        values = selected.get("close_prices") if isinstance(selected, dict) else []
+    close_prices: list[float] = []
+    for value in values or []:
+        parsed = _format_price(value)
+        if parsed is not None:
+            close_prices.append(parsed)
+    live_price = _format_price(reference_price)
+    if close_prices and live_price is not None:
+        close_prices[-1] = live_price
+    return close_prices
+
+
+def _emit_active_screening_after(
+    *,
+    notification_callback: NotificationCallback,
+    slot: PortfolioSlot,
+    candidate: Dict[str, Any],
+    result: Dict[str, Any],
+    reference_price: float,
+    trigger_info: Dict[str, Any],
+    config: Dict[str, Any],
+    position_before: Optional[Dict[str, Any]],
+) -> None:
+    _emit_notification(
+        notification_callback,
+        "active_screening_after",
+        {
+            "slot_id": slot.slot_id,
+            "slot_label": slot.label,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "symbol": result.get("symbol") or candidate.get("symbol"),
+            "current_price": reference_price,
+            "trigger_reason": trigger_info.get("reason"),
+            "trigger_price": trigger_info.get("trigger_price"),
+            "next_trigger_down": trigger_info.get("next_trigger_down"),
+            "next_trigger_up": trigger_info.get("next_trigger_up"),
+            "decision": result.get("screening_decision"),
+            "screening_decision": result.get("screening_decision"),
+            "screening_direction": result.get("screening_direction"),
+            "decision_source": result.get("decision_source") or "active_screener",
+            "action": result.get("action"),
+            "success": bool(result.get("success")),
+            "execution": result.get("execution"),
+            "close": result.get("close"),
+            "position": result.get("position"),
+            "position_before": calculate_position_metrics(position_before) if isinstance(position_before, dict) else None,
+            "screener": result.get("screener"),
+            "ai_prompt_timeframe": str(config.get("ai_prompt_timeframe") or DEFAULT_AI_PROMPT_TIMEFRAME),
+            "ai_prompt_candle_count": int(config.get("ai_prompt_candle_count") or DEFAULT_AI_PROMPT_CANDLE_COUNT),
+            "close_prices": _active_screening_close_prices(candidate, reference_price),
+        },
+    )
 
 
 def _evaluate_slot_direction(
@@ -1838,6 +1897,16 @@ def _run_active_slot(
                 symbol=current_symbol,
                 update_anchor=True,
             )
+            _emit_active_screening_after(
+                notification_callback=notification_callback,
+                slot=slot,
+                candidate=candidate,
+                result=result,
+                reference_price=reference_price,
+                trigger_info=trigger_info,
+                config=config,
+                position_before=position,
+            )
             return result, updated_state, current_symbol
 
         close_result = _close_existing_position(
@@ -1946,6 +2015,16 @@ def _run_active_slot(
         ai_decision=decision,
         symbol=candidate_symbol if result["success"] else None,
         update_anchor=True,
+    )
+    _emit_active_screening_after(
+        notification_callback=notification_callback,
+        slot=slot,
+        candidate=candidate,
+        result=result,
+        reference_price=reference_price,
+        trigger_info=trigger_info,
+        config=config,
+        position_before=position,
     )
     return result, updated_state, candidate_symbol
 

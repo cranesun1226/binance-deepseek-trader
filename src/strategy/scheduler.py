@@ -343,6 +343,56 @@ class TradingScheduler:
             sections=sections,
         )
 
+    def _build_active_screening_after_message(self, payload: Dict[str, Any]) -> str:
+        screener = payload.get("screener") if isinstance(payload.get("screener"), dict) else {}
+        selection = screener.get("selection") if isinstance(screener.get("selection"), dict) else {}
+        selected = selection.get("selected") if isinstance(selection.get("selected"), dict) else {}
+        execution = payload.get("execution") if isinstance(payload.get("execution"), dict) else {}
+        close_result = payload.get("close") if isinstance(payload.get("close"), dict) else {}
+        sections: list[tuple[str, Sequence[str], bool]] = [
+            (
+                self._format_html_title("Screening"),
+                [
+                    self._format_html_line("Mode", (screener.get("metadata") or {}).get("screening_mode"), code=True)
+                    if isinstance(screener.get("metadata"), dict)
+                    else "",
+                    self._format_html_line("Rank Metric", selection.get("ranking_metric"), code=True),
+                    self._format_html_line("Range", self._format_float(selected.get("close_range_volatility_pct"), 2) + "%"),
+                    self._format_html_line("Net Return", self._format_float(selected.get("net_return_pct"), 2) + "%"),
+                ],
+                True,
+            ),
+            (
+                self._format_html_title("Execution"),
+                [
+                    self._format_html_line("Action", self._translate_action(payload.get("action"))),
+                    self._format_html_line("Success", str(bool(payload.get("success")))),
+                    self._format_html_line("Qty", execution.get("qty"), code=True),
+                    self._format_html_line("Side", execution.get("side"), code=True),
+                    self._format_html_line("Closed", close_result.get("symbol"), code=True) if close_result else "",
+                ],
+                True,
+            ),
+            (
+                self._format_html_title("Position"),
+                [
+                    self._format_html_line("Before", self._format_position_summary(payload.get("position_before"))),
+                    self._format_html_line("After", self._format_position_summary(payload.get("position"))),
+                ],
+                True,
+            ),
+        ]
+        return self._build_message(
+            title=self._format_html_title("Active Screening Decision"),
+            summary_lines=[
+                self._format_html_line("Symbol", payload.get("symbol"), code=True),
+                self._format_html_line("Decision", payload.get("screening_decision") or payload.get("decision"), bold=True),
+                self._format_html_line("Price", self._format_usdt(payload.get("current_price"))),
+                self._format_html_line("Trigger", self._translate_trigger_reason(payload.get("trigger_reason"))),
+            ],
+            sections=sections,
+        )
+
     def _build_cycle_completed_message(self, payload: Dict[str, Any]) -> str:
         slot_lines = []
         for slot_result in payload.get("slot_results") or []:
@@ -406,9 +456,14 @@ class TradingScheduler:
         change_pct = (change / first_price) * 100.0 if first_price > 0.0 else 0.0
         timeframe = str(payload.get("ai_prompt_timeframe") or "1h").strip() or "1h"
         change_text = f"{change:+,.2f} USDT ({change_pct:+.2f}%)"
+        title = (
+            "Active Screening Close Prices Line Chart"
+            if str(payload.get("decision_source") or "").strip() == "active_screener"
+            else "AI Close Prices Line Chart"
+        )
         return "\n".join(
             [
-                "<b>AI Close Prices Line Chart</b>",
+                f"<b>{title}</b>",
                 "",
                 self._format_html_line("Symbol", payload.get("symbol"), code=True),
                 self._format_html_line("Timeframe", timeframe, code=True),
@@ -469,6 +524,22 @@ class TradingScheduler:
                         "chart_sent": chart_sent,
                         "symbol": payload.get("symbol"),
                         "decision": payload.get("decision"),
+                    }
+                ),
+            )
+            return
+        if event_name == "active_screening_after":
+            sent = self._emit_telegram_text(self._build_active_screening_after_message(payload))
+            chart_sent = self._emit_telegram_close_price_chart(payload)
+            logger.info(
+                "Telegram event dispatched | %s",
+                format_log_details(
+                    {
+                        "event": event_name,
+                        "sent": sent,
+                        "chart_sent": chart_sent,
+                        "symbol": payload.get("symbol"),
+                        "decision": payload.get("screening_decision") or payload.get("decision"),
                     }
                 ),
             )

@@ -75,6 +75,49 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(mocked_chart.call_args.kwargs["limit"], 168)
         self.assertIn("<b>Count:</b> 168", mocked_photo.call_args.kwargs["caption"])
 
+    def test_active_screening_event_sends_message_and_chart(self):
+        scheduler = TradingScheduler()
+        payload = {
+            "slot_id": "active_1",
+            "slot_label": "active1",
+            "symbol": "SOLUSDT",
+            "current_price": 55.0,
+            "trigger_reason": "active_candidate_selected",
+            "screening_decision": "LONG",
+            "decision": "LONG",
+            "decision_source": "active_screener",
+            "action": "opened_new_position",
+            "success": True,
+            "execution": {"action": "opened_new_position", "side": "Buy", "qty": "3"},
+            "position": {"symbol": "SOLUSDT", "direction": "long", "size": 3, "entry_price": 55.0},
+            "screener": {
+                "metadata": {"screening_mode": "crypto"},
+                "selection": {
+                    "ranking_metric": "close_range_volatility",
+                    "selected": {
+                        "close_range_volatility_pct": 6.2,
+                        "net_return_pct": 6.1,
+                    },
+                },
+            },
+            "ai_prompt_timeframe": "1h",
+            "ai_prompt_candle_count": 3,
+            "close_prices": [52.0, 54.0, 55.0],
+        }
+
+        with patch("src.strategy.scheduler.send_telegram_message", return_value=True) as mocked_text, patch(
+            "src.strategy.scheduler.build_close_price_line_chart_png", return_value=b"png"
+        ) as mocked_chart, patch("src.strategy.scheduler.send_telegram_photo", return_value=True) as mocked_photo:
+            scheduler._notify_telegram_event("active_screening_after", payload)
+
+        mocked_text.assert_called_once()
+        self.assertIn("Active Screening Decision", mocked_text.call_args.args[0])
+        self.assertIn("SOLUSDT", mocked_text.call_args.args[0])
+        mocked_chart.assert_called_once()
+        self.assertEqual(mocked_chart.call_args.args[0], [52.0, 54.0, 55.0])
+        mocked_photo.assert_called_once()
+        self.assertIn("Active Screening Close Prices Line Chart", mocked_photo.call_args.kwargs["caption"])
+
 
 if __name__ == "__main__":
     unittest.main()
