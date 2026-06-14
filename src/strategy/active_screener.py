@@ -25,10 +25,12 @@ logger = get_logger("active_screener")
 VOLATILITY_CANDIDATE_REPORT_LIMIT = 10
 VOLATILITY_REJECTION_LOG_LIMIT = 20
 VOLATILITY_RANKING_METRIC = "close_range_volatility"
-VOLATILITY_RANKING_FORMULA = "abs(max(close)-min(close))/((max(close)+min(close))/2)"
+VOLATILITY_RANKING_FORMULA = "abs(last_close-first_close)/((last_close+first_close)/2)"
+SCREENING_DECISION_FORMULA = "LONG when last_close > first_close, SHORT when last_close < first_close"
 EPSILON = 1e-12
 RECENT_KLINE_RANGE_LOOKBACK = 2
 RECENT_KLINE_RANGE_CHANGE_LIMIT = 0.04
+MANAGED_SCREENING_DECISIONS = {"LONG", "SHORT"}
 
 
 class NoActiveCandidateError(RuntimeError):
@@ -256,15 +258,24 @@ def calculate_close_range_volatility_metrics(symbol: str, close_prices: Sequence
     if any(price <= 0.0 for price in prices):
         raise ValueError("close prices must be positive")
 
-    max_close = max(prices)
-    min_close = min(prices)
-    midpoint = (max_close + min_close) / 2.0
-    if midpoint <= EPSILON:
-        raise ValueError("close range midpoint must be positive")
-    close_range_volatility = abs(max_close - min_close) / midpoint
     first_close = prices[0]
     last_close = prices[-1]
+    max_close = max(prices)
+    min_close = min(prices)
+    midpoint = (last_close + first_close) / 2.0
+    if midpoint <= EPSILON:
+        raise ValueError("close range midpoint must be positive")
+    close_range_volatility = abs(last_close - first_close) / midpoint
     net_return_pct = ((last_close - first_close) / first_close) * 100.0 if first_close > EPSILON else 0.0
+    if last_close > first_close + EPSILON:
+        screening_direction = "up"
+        screening_decision = "LONG"
+    elif last_close < first_close - EPSILON:
+        screening_direction = "down"
+        screening_decision = "SHORT"
+    else:
+        screening_direction = "flat"
+        screening_decision = None
 
     return {
         "symbol": normalized_symbol,
@@ -277,6 +288,9 @@ def calculate_close_range_volatility_metrics(symbol: str, close_prices: Sequence
         "close_range_volatility": close_range_volatility,
         "close_range_volatility_pct": close_range_volatility * 100.0,
         "net_return_pct": net_return_pct,
+        "screening_direction": screening_direction,
+        "screening_decision": screening_decision,
+        "screening_decision_formula": SCREENING_DECISION_FORMULA,
         "ranking_metric": VOLATILITY_RANKING_METRIC,
         "ranking_formula": VOLATILITY_RANKING_FORMULA,
     }
@@ -303,6 +317,11 @@ def rank_volatility_candidates(rows: Sequence[Dict[str, Any]]) -> list[Dict[str,
     return ranked
 
 
+def _has_screening_decision(candidate: Dict[str, Any]) -> bool:
+    decision = str(candidate.get("screening_decision") or "").strip().upper()
+    return decision in MANAGED_SCREENING_DECISIONS
+
+
 def score_trend_candidates(rows: Sequence[Dict[str, Any]]) -> list[Dict[str, Any]]:
     """Backward-compatible wrapper for the previous candidate scoring function name."""
     return rank_volatility_candidates(rows)
@@ -318,18 +337,23 @@ def select_active_symbol_from_volatility_candidates(
     eligible = [
         dict(candidate)
         for candidate in candidates
-        if str(candidate.get("symbol") or "").strip().upper() and str(candidate.get("symbol") or "").strip().upper() not in excluded
+        if str(candidate.get("symbol") or "").strip().upper()
+        and str(candidate.get("symbol") or "").strip().upper() not in excluded
+        and _has_screening_decision(candidate)
     ]
     ranked = rank_volatility_candidates(eligible)
     selected = ranked[0] if ranked else None
     return {
         "symbol": str(selected.get("symbol") or "").upper() if selected else None,
+        "screening_decision": str(selected.get("screening_decision") or "").upper() if selected else None,
+        "screening_direction": str(selected.get("screening_direction") or "").lower() if selected else None,
         "selected": selected,
         "top_candidates": ranked[: max(1, int(report_limit))],
         "candidate_count": len(ranked),
         "excluded_symbols": sorted(excluded),
         "ranking_metric": VOLATILITY_RANKING_METRIC,
         "ranking_formula": VOLATILITY_RANKING_FORMULA,
+        "screening_decision_formula": SCREENING_DECISION_FORMULA,
     }
 
 
@@ -408,7 +432,8 @@ def _no_candidate_message(screening_mode: str, required_kline_interval: Any, req
         f"active {screening_mode} volatility screener found no candidate with at least "
         f"{required_kline_count} {to_binance_kline_interval(required_kline_interval)} valid close-price klines "
         f"and latest returned {RECENT_KLINE_RANGE_LOOKBACK}-kline range change <= "
-        f"{RECENT_KLINE_RANGE_CHANGE_LIMIT * 100.0:.2f}% including the current forming kline"
+        f"{RECENT_KLINE_RANGE_CHANGE_LIMIT * 100.0:.2f}% including the current forming kline "
+        "and a non-flat screening direction"
     )
 
 
@@ -461,6 +486,7 @@ def screen_active_symbol(
             "required_kline_count": max(1, safe_int(required_kline_count, DEFAULT_AI_PROMPT_CANDLE_COUNT)),
             "ranking_metric": VOLATILITY_RANKING_METRIC,
             "ranking_formula": VOLATILITY_RANKING_FORMULA,
+            "screening_decision_formula": SCREENING_DECISION_FORMULA,
             "recent_kline_range_filter": {
                 "lookback": RECENT_KLINE_RANGE_LOOKBACK,
                 "change_limit": RECENT_KLINE_RANGE_CHANGE_LIMIT,
@@ -521,6 +547,7 @@ def screen_active_tradfi_symbol(
             "required_kline_count": max(1, safe_int(required_kline_count, DEFAULT_AI_PROMPT_CANDLE_COUNT)),
             "ranking_metric": VOLATILITY_RANKING_METRIC,
             "ranking_formula": VOLATILITY_RANKING_FORMULA,
+            "screening_decision_formula": SCREENING_DECISION_FORMULA,
             "recent_kline_range_filter": {
                 "lookback": RECENT_KLINE_RANGE_LOOKBACK,
                 "change_limit": RECENT_KLINE_RANGE_CHANGE_LIMIT,
@@ -537,6 +564,7 @@ __all__ = [
     "NoActiveCandidateError",
     "RECENT_KLINE_RANGE_CHANGE_LIMIT",
     "RECENT_KLINE_RANGE_LOOKBACK",
+    "SCREENING_DECISION_FORMULA",
     "VOLATILITY_RANKING_FORMULA",
     "VOLATILITY_RANKING_METRIC",
     "build_usdt_tradfi_perpetual_universe",

@@ -421,6 +421,8 @@ def _has_material_position_record(payload: Any) -> bool:
 def _should_persist_cycle_output(result: Dict[str, Any]) -> bool:
     if bool(result.get("ai_triggered")):
         return True
+    if bool(result.get("screening_triggered")):
+        return True
     if result.get("unmanaged_position_closes"):
         return True
     slot_results = result.get("slot_results")
@@ -632,11 +634,12 @@ def _update_slot_trigger_state(
     trigger_info: Dict[str, Any],
     ai_decision: Optional[str] = None,
     symbol: Optional[str] = None,
+    update_anchor: bool = False,
 ) -> Dict[str, Any]:
     updated = dict(slot_state)
     if symbol is not None:
         updated["symbol"] = _normalize_symbol(symbol)
-    if ai_triggered:
+    if ai_triggered or update_anchor:
         updated["last_ai_trigger_price"] = _normalize_trigger_price(trigger_info.get("trigger_price"))
         updated["last_ai_triggered_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     normalized_decision = _normalize_ai_decision(ai_decision)
@@ -1252,12 +1255,41 @@ def _screen_active_candidate(
     selected_symbol = _normalize_symbol((selection or {}).get("symbol"))
     if not selected_symbol:
         raise NoActiveCandidateError("active screener did not return a tradable candidate")
+    selected = selection.get("selected") if isinstance(selection, dict) else {}
+    if not isinstance(selected, dict):
+        selected = {}
+    screening_decision = _normalize_ai_decision(
+        (selection or {}).get("screening_decision") or selected.get("screening_decision")
+    )
+    if screening_decision is None:
+        raise NoActiveCandidateError("active screener did not return a LONG/SHORT direction")
     return {
         "symbol": selected_symbol,
+        "screening_decision": screening_decision,
+        "screening_direction": str(
+            (selection or {}).get("screening_direction") or selected.get("screening_direction") or ""
+        ).strip().lower()
+        or None,
+        "decision_source": "active_screener",
         "selection": selection,
         "metadata": screener_output.get("metadata", {}),
         "_screener_output": screener_output,
     }
+
+
+def _apply_active_screening_decision(result: Dict[str, Any], candidate: Dict[str, Any]) -> Optional[str]:
+    decision = _normalize_ai_decision(candidate.get("screening_decision"))
+    result["screening_triggered"] = True
+    result["screening_decision"] = decision
+    result["screening_direction"] = candidate.get("screening_direction")
+    result["decision_source"] = candidate.get("decision_source") or "active_screener"
+    if decision is not None:
+        result["ai_decision"] = None
+    return decision
+
+
+def _visible_active_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: value for key, value in dict(candidate or {}).items() if key != "_screener_output"}
 
 
 def _evaluate_slot_direction(
@@ -1420,6 +1452,10 @@ def _slot_result_base(slot: PortfolioSlot, symbol: Optional[str]) -> Dict[str, A
         "action": "init",
         "ai_triggered": False,
         "ai_decision": None,
+        "screening_triggered": False,
+        "screening_decision": None,
+        "screening_direction": None,
+        "decision_source": None,
         "trigger_reason": None,
         "trigger_price": None,
         "next_trigger_down": None,
@@ -1659,6 +1695,7 @@ def _run_active_slot(
         leverage=leverage,
     )
     result["target_notional_usdt"] = target_notional
+    candidate: Optional[Dict[str, Any]] = None
 
     if isinstance(position, dict) and current_symbol:
         leverage_sync = _ensure_symbol_leverage(
@@ -1728,39 +1765,55 @@ def _run_active_slot(
             )
             return result, updated_state, current_symbol
 
-        exit_decision, exit_analysis, prompt_payload, exit_error = _evaluate_slot_direction_or_none(
-            slot=slot,
-            symbol=current_symbol,
-            reference_price=reference_price,
-            config=config,
-            as_of_ms=as_of_ms,
-            cycle_dir_factory=cycle_dir_factory,
-            notification_callback=notification_callback,
-            position=position,
-            trigger_info=trigger_info,
-            decision_mode="active_existing_direction",
-        )
-        result["ai_triggered"] = True
-        result["position_exit_ai_decision"] = exit_decision
-        result["position_exit_ai_analysis"] = exit_analysis
-        result.update(prompt_payload)
-        if exit_error:
-            result["error"] = exit_error
-        if exit_decision is None:
-            result["action"] = "ai_decision_failed"
+        screenable_positions = [row for row in open_positions if _position_symbol(row) != current_symbol]
+        try:
+            candidate = _screen_active_candidate(
+                slot=slot,
+                config=config,
+                excluded_symbols=_active_exclusions(
+                    config=config,
+                    open_positions=screenable_positions,
+                    reserved_symbols=reserved_symbols,
+                ),
+            )
+        except NoActiveCandidateError as exc:
+            result["success"] = True
+            result["action"] = "waiting_for_active_candidate"
+            result["error"] = str(exc)
+            result["position"] = calculate_position_metrics(position)
             return result, slot_state, current_symbol
+        except Exception as exc:
+            result["action"] = "screener_selection_failed"
+            result["error"] = str(exc)
+            result["position"] = calculate_position_metrics(position)
+            return result, slot_state, current_symbol
+
+        candidate_symbol = str(candidate["symbol"])
+        result["symbol"] = candidate_symbol
+        result["candidate_symbol"] = candidate_symbol
+        result["screener"] = _visible_active_candidate(candidate)
+        decision = _apply_active_screening_decision(result, candidate)
+        slot_dir = _slot_artifact_dir(cycle_dir_factory(), slot.slot_id)
+        screener_output = candidate.get("_screener_output")
+        if isinstance(screener_output, dict):
+            _persist_screener_output(slot_dir, screener_output)
+        if decision is None:
+            result["action"] = "candidate_screening_direction_unavailable"
+            return result, slot_state, current_symbol
+
         current_direction = _position_direction(position)
-        desired_direction = _decision_to_position_direction(exit_decision)
+        desired_direction = _decision_to_position_direction(decision)
         if desired_direction is None:
-            result["action"] = "invalid_ai_decision"
+            result["action"] = "candidate_screening_direction_unavailable"
             return result, slot_state, current_symbol
-        if current_direction == desired_direction:
+
+        if candidate_symbol == current_symbol:
             execution = _rebalance_existing_position(
                 api_key=api_key,
                 api_secret=api_secret,
                 symbol=current_symbol,
                 position=position,
-                decision=exit_decision,
+                decision=decision,
                 target_notional_usdt=target_notional,
                 reference_price=reference_price,
                 leverage=leverage,
@@ -1768,18 +1821,22 @@ def _run_active_slot(
                 rebalance_threshold_pct=float(config["rebalance_threshold_pct"]),
                 stop_loss_pct=float(config["stop_loss_pct"]),
             )
-            result["ai_decision"] = exit_decision
             result["execution"] = execution
             result["position"] = execution.get("position") or calculate_position_metrics(position)
             result["stop_sync"] = execution.get("stop_sync")
             result["success"] = bool(execution.get("success"))
-            result["action"] = "kept_position_by_ai" if result["success"] else str(execution.get("action") or "execution_failed")
+            execution_action = str(execution.get("action") or "execution_failed")
+            if result["success"] and current_direction == desired_direction and execution_action == "kept_position_size":
+                result["action"] = "kept_position_by_screening"
+            else:
+                result["action"] = execution_action
             updated_state = _update_slot_trigger_state(
                 slot_state,
-                ai_triggered=True,
+                ai_triggered=False,
                 trigger_info=trigger_info,
-                ai_decision=exit_decision,
+                ai_decision=decision,
                 symbol=current_symbol,
+                update_anchor=True,
             )
             return result, updated_state, current_symbol
 
@@ -1796,32 +1853,33 @@ def _run_active_slot(
         slot_state = _clear_active_slot_state(slot_state)
         open_positions = [row for row in open_positions if _position_symbol(row) != current_symbol]
 
-    try:
-        candidate = _screen_active_candidate(
-            slot=slot,
-            config=config,
-            excluded_symbols=_active_exclusions(
+    if candidate is None:
+        try:
+            candidate = _screen_active_candidate(
+                slot=slot,
                 config=config,
-                open_positions=open_positions,
-                reserved_symbols=reserved_symbols,
-                old_symbol=current_symbol,
-            ),
-        )
-    except NoActiveCandidateError as exc:
-        result["success"] = True
-        result["action"] = "waiting_for_active_candidate"
-        result["error"] = str(exc)
-        return result, slot_state, None
-    except Exception as exc:
-        result["action"] = "screener_selection_failed"
-        result["error"] = str(exc)
-        return result, slot_state, None
+                excluded_symbols=_active_exclusions(
+                    config=config,
+                    open_positions=open_positions,
+                    reserved_symbols=reserved_symbols,
+                    old_symbol=current_symbol,
+                ),
+            )
+        except NoActiveCandidateError as exc:
+            result["success"] = True
+            result["action"] = "waiting_for_active_candidate"
+            result["error"] = str(exc)
+            return result, slot_state, None
+        except Exception as exc:
+            result["action"] = "screener_selection_failed"
+            result["error"] = str(exc)
+            return result, slot_state, None
 
     candidate_symbol = str(candidate["symbol"])
-    screener_output = candidate.pop("_screener_output", None)
+    screener_output = candidate.get("_screener_output")
     result["symbol"] = candidate_symbol
     result["candidate_symbol"] = candidate_symbol
-    result["screener"] = candidate
+    result["screener"] = _visible_active_candidate(candidate)
     reference_price = _reference_price(candidate_symbol)
     if reference_price is None:
         result["action"] = "candidate_reference_price_unavailable"
@@ -1845,26 +1903,9 @@ def _run_active_slot(
     slot_dir = _slot_artifact_dir(cycle_dir_factory(), slot.slot_id)
     if isinstance(screener_output, dict):
         _persist_screener_output(slot_dir, screener_output)
-    decision, ai_analysis, prompt_payload, ai_error = _evaluate_slot_direction_or_none(
-        slot=slot,
-        symbol=candidate_symbol,
-        reference_price=reference_price,
-        config=config,
-        as_of_ms=as_of_ms,
-        cycle_dir_factory=cycle_dir_factory,
-        notification_callback=notification_callback,
-        position=None,
-        trigger_info=trigger_info,
-        decision_mode="active_candidate_direction",
-    )
-    result["ai_triggered"] = True
-    result["ai_decision"] = decision
-    result["ai_analysis"] = ai_analysis
-    result.update(prompt_payload)
-    if ai_error:
-        result["error"] = ai_error
+    decision = _apply_active_screening_decision(result, candidate)
     if decision is None:
-        result["action"] = "candidate_ai_decision_failed"
+        result["action"] = "candidate_screening_direction_unavailable"
         return result, slot_state, candidate_symbol
     fresh_overview = get_account_overview(api_key, api_secret) or account_overview
     available_cap = _available_notional_cap(
@@ -1900,10 +1941,11 @@ def _run_active_slot(
     result["stop_sync"] = execution.get("stop_sync")
     updated_state = _update_slot_trigger_state(
         _clear_active_slot_state(slot_state),
-        ai_triggered=True,
+        ai_triggered=False,
         trigger_info=trigger_info,
         ai_decision=decision,
         symbol=candidate_symbol if result["success"] else None,
+        update_anchor=True,
     )
     return result, updated_state, candidate_symbol
 
@@ -1926,6 +1968,7 @@ def run_portfolio_cycle(
         "action": "init",
         "cycle_dir": cycle_dir,
         "ai_triggered": False,
+        "screening_triggered": False,
         "slot_results": [],
         "state_update": portfolio_state,
         "config_summary": {
@@ -2029,13 +2072,19 @@ def run_portfolio_cycle(
         result["slot_results"].append(slot_result)
         if bool(slot_result.get("ai_triggered")):
             result["ai_triggered"] = True
+        if bool(slot_result.get("screening_triggered")):
+            result["screening_triggered"] = True
 
     result["success"] = all(bool(slot_result.get("success")) for slot_result in result["slot_results"])
     result["action"] = "portfolio_cycle_completed" if result["success"] else "portfolio_cycle_partial_failure"
     result["state_update"] = portfolio_state
     if result["slot_results"]:
-        last_ai_result = next(
-            (slot_result for slot_result in reversed(result["slot_results"]) if bool(slot_result.get("ai_triggered"))),
+        last_decision_result = next(
+            (
+                slot_result
+                for slot_result in reversed(result["slot_results"])
+                if bool(slot_result.get("ai_triggered")) or bool(slot_result.get("screening_triggered"))
+            ),
             result["slot_results"][-1],
         )
         for key in (
@@ -2049,8 +2098,11 @@ def run_portfolio_cycle(
             "next_trigger_down",
             "next_trigger_up",
             "position",
+            "screening_decision",
+            "screening_direction",
+            "decision_source",
         ):
-            result[key] = last_ai_result.get(key)
+            result[key] = last_decision_result.get(key)
     if _should_persist_cycle_output(result):
         ensure_cycle_dir()
         _persist_cycle_output(result)
@@ -2061,6 +2113,7 @@ def run_portfolio_cycle(
                 "success": result["success"],
                 "action": result["action"],
                 "ai_triggered": result["ai_triggered"],
+                "screening_triggered": result["screening_triggered"],
                 "slot_count": len(result["slot_results"]),
                 "cycle_dir": result.get("cycle_dir"),
             }

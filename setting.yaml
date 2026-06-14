@@ -3,8 +3,8 @@
 # Trading loop
 cycle_interval_seconds: 60
 
-# LLM trigger: re-evaluate a slot when price moves +/- this percent
-# from that slot's last LLM decision anchor.
+# Decision trigger: re-evaluate a slot when price moves +/- this percent
+# from that slot's last decision anchor.
 trigger_pct_usdt: 1.0
 
 # Prompt input: 168 recent 1h close prices, with the newest value aligned
@@ -37,8 +37,10 @@ passive_symbols:
 # active1 and active3 screen crypto USDT perpetuals.
 # active2 and active4 screen TradFi USDT perpetuals.
 # Active candidates are ranked by close_range_volatility:
-# abs(max(close)-min(close))/((max(close)+min(close))/2), using
+# abs(last_close-first_close)/((last_close+first_close)/2), using
 # ai_prompt_candle_count closes on ai_prompt_timeframe.
+# Active direction is LONG when last_close > first_close and SHORT when
+# last_close < first_close. Flat candidates are skipped.
 # Before ranking, the latest returned 2 klines are filtered by high/low range
 # change <= 4%; this intentionally includes the currently forming 1h candle
 # and the immediately preceding candle, not only fully closed candles.

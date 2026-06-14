@@ -46,13 +46,14 @@ ACTION_LABELS = {
     "portfolio_cycle_partial_failure": "Portfolio cycle partial failure",
     "kept_position_size": "Position kept, stop checked",
     "kept_position_by_ai": "Position kept by AI",
+    "kept_position_by_screening": "Position kept by screening",
     "opened_new_position": "Opened new position",
     "reversed_position": "Reversed position",
     "increased_position": "Increased position",
     "reduced_position": "Reduced position",
     "closed_position": "Closed position",
     "screener_selection_failed": "Active screener failed",
-    "candidate_ai_decision_failed": "Candidate AI decision failed",
+    "candidate_screening_direction_unavailable": "Candidate screening direction unavailable",
     "ai_decision_failed": "AI decision failed",
     "entry_order_failed": "Entry order failed",
     "reference_price_unavailable": "Reference price unavailable",
@@ -76,6 +77,7 @@ def _build_cycle_completion_log_details(result: Dict[str, Any]) -> Dict[str, Any
             "success": bool(result.get("success")),
             "action": result.get("action"),
             "ai_triggered": bool(result.get("ai_triggered")),
+            "screening_triggered": bool(result.get("screening_triggered")),
             "slot_count": len(result.get("slot_results") or []),
             "cycle_dir": result.get("cycle_dir"),
         }
@@ -143,6 +145,7 @@ class TradingScheduler:
             "success": bool(result.get("success")),
             "action": result.get("action"),
             "ai_triggered": bool(result.get("ai_triggered")),
+            "screening_triggered": bool(result.get("screening_triggered")),
             "slot_count": len(result.get("slot_results") or []),
             "cycle_dir": result.get("cycle_dir"),
         }
@@ -359,6 +362,7 @@ class TradingScheduler:
             summary_lines=[
                 self._format_html_line("Action", self._translate_action(payload.get("action"))),
                 self._format_html_line("AI Triggered", str(bool(payload.get("ai_triggered")))),
+                self._format_html_line("Screening Triggered", str(bool(payload.get("screening_triggered")))),
             ],
             sections=[(self._format_html_title("Slots"), slot_lines, True)],
         )
@@ -470,7 +474,11 @@ class TradingScheduler:
             )
 
     def _maybe_send_cycle_notifications(self, cycle_time: datetime, result: Dict[str, Any]) -> None:
-        if bool(result.get("ai_triggered")) or bool(result.get("unmanaged_position_closes")):
+        if (
+            bool(result.get("ai_triggered"))
+            or bool(result.get("screening_triggered"))
+            or bool(result.get("unmanaged_position_closes"))
+        ):
             cycle_payload = dict(result)
             cycle_payload["timestamp"] = cycle_time.isoformat()
             self._emit_telegram_text(self._build_cycle_completed_message(cycle_payload))

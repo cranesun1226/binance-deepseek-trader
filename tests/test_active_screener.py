@@ -32,16 +32,20 @@ def _kline(index, *, close, high=None, low=None):
 
 
 class ActiveScreenerTests(unittest.TestCase):
-    def test_close_range_volatility_metrics_uses_max_min_midpoint(self):
+    def test_close_range_volatility_metrics_uses_first_last_midpoint(self):
         metrics = calculate_close_range_volatility_metrics("RANGEUSDT", [100.0, 110.0, 90.0, 105.0])
 
         self.assertEqual(metrics["symbol"], "RANGEUSDT")
         self.assertEqual(metrics["close_count"], 4)
+        self.assertEqual(metrics["first_close"], 100.0)
+        self.assertEqual(metrics["last_close"], 105.0)
         self.assertEqual(metrics["min_close"], 90.0)
         self.assertEqual(metrics["max_close"], 110.0)
-        self.assertEqual(metrics["close_range_midpoint"], 100.0)
-        self.assertAlmostEqual(metrics["close_range_volatility"], 0.2)
-        self.assertAlmostEqual(metrics["close_range_volatility_pct"], 20.0)
+        self.assertEqual(metrics["close_range_midpoint"], 102.5)
+        self.assertAlmostEqual(metrics["close_range_volatility"], 5.0 / 102.5)
+        self.assertAlmostEqual(metrics["close_range_volatility_pct"], (5.0 / 102.5) * 100.0)
+        self.assertEqual(metrics["screening_direction"], "up")
+        self.assertEqual(metrics["screening_decision"], "LONG")
         self.assertEqual(metrics["ranking_metric"], "close_range_volatility")
 
     def test_close_range_volatility_metrics_allows_flat_paths(self):
@@ -49,11 +53,14 @@ class ActiveScreenerTests(unittest.TestCase):
 
         self.assertEqual(metrics["close_count"], 168)
         self.assertEqual(metrics["close_range_volatility"], 0.0)
+        self.assertEqual(metrics["screening_direction"], "flat")
+        self.assertIsNone(metrics["screening_decision"])
 
     def test_selects_highest_close_range_volatility_after_exclusions(self):
         candidates = [
             calculate_close_range_volatility_metrics("LOWVOLUSDT", [100.0] * 167 + [102.0]),
             calculate_close_range_volatility_metrics("HIGHVOLUSDT", [100.0] * 167 + [130.0]),
+            calculate_close_range_volatility_metrics("FLATVOLUSDT", [100.0, 150.0, 50.0, 100.0]),
             calculate_close_range_volatility_metrics("EXCLUDEDUSDT", [100.0] * 167 + [200.0]),
         ]
 
@@ -63,8 +70,11 @@ class ActiveScreenerTests(unittest.TestCase):
         )
 
         self.assertEqual(selection["symbol"], "HIGHVOLUSDT")
+        self.assertEqual(selection["screening_decision"], "LONG")
+        self.assertEqual(selection["screening_direction"], "up")
         self.assertEqual(selection["ranking_metric"], "close_range_volatility")
         self.assertNotIn("EXCLUDEDUSDT", [row["symbol"] for row in selection["top_candidates"]])
+        self.assertNotIn("FLATVOLUSDT", [row["symbol"] for row in selection["top_candidates"]])
         self.assertGreater(
             selection["selected"]["close_range_volatility"],
             next(row["close_range_volatility"] for row in selection["top_candidates"] if row["symbol"] == "LOWVOLUSDT"),

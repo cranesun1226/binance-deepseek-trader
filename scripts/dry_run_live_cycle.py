@@ -97,6 +97,7 @@ def _summarize_result(result: Dict[str, Any]) -> Dict[str, Any]:
         "success": result.get("success"),
         "action": result.get("action"),
         "ai_triggered": result.get("ai_triggered"),
+        "screening_triggered": result.get("screening_triggered"),
         "cycle_dir": result.get("cycle_dir"),
         "slots": [
             {
@@ -105,7 +106,10 @@ def _summarize_result(result: Dict[str, Any]) -> Dict[str, Any]:
                 "symbol": row.get("symbol"),
                 "action": row.get("action"),
                 "ai_triggered": row.get("ai_triggered"),
-                "ai_decision": row.get("ai_decision") or row.get("position_exit_ai_decision"),
+                "ai_decision": row.get("ai_decision"),
+                "screening_triggered": row.get("screening_triggered"),
+                "screening_decision": row.get("screening_decision"),
+                "decision_source": row.get("decision_source"),
                 "leverage": row.get("leverage"),
                 "target_notional_usdt": row.get("target_notional_usdt"),
             }
@@ -140,7 +144,8 @@ def main() -> int:
         )
 
     # Patch private/account-mutating Binance calls only. Public market data,
-    # DeepSeek, and Telegram still run against live external services.
+    # passive-slot DeepSeek calls, active screening, and Telegram still run
+    # against live external services.
     with patch("src.strategy.portfolio_strategy.get_binance_credentials", return_value=("dry_run", "dry_run")), patch(
         "src.strategy.portfolio_strategy.get_account_overview", side_effect=_fake_account_overview
     ), patch(
