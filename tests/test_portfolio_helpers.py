@@ -312,6 +312,29 @@ class PortfolioHelperTests(unittest.TestCase):
         self.assertEqual(state["slots"]["active_1"]["symbol"], "ETHUSDT")
         self.assertIsNone(state["slots"]["active_2"]["symbol"])
 
+    def test_active_recent_symbols_are_grouped_by_screening_universe(self):
+        config = {
+            "passive_symbols": ["CLUSDT", "XAUUSDT", "QQQUSDT", "BTCUSDT"],
+        }
+        slots = portfolio_strategy._build_portfolio_slots(config)
+        state = portfolio_strategy._normalize_portfolio_state(
+            {
+                "version": portfolio_strategy.STATE_VERSION,
+                "slots": {
+                    "active_1": {"symbol": "ETHUSDT", "previous_active_symbol": "SOLUSDT"},
+                    "active_2": {"symbol": "ESUSDT", "previous_active_symbol": "NQUSDT"},
+                    "active_3": {"symbol": "BNBUSDT"},
+                    "active_4": {"previous_active_symbol": "GCUSDT"},
+                },
+            },
+            slots,
+        )
+
+        grouped = portfolio_strategy._active_recent_symbols_by_mode(slots, state)
+
+        self.assertEqual(grouped["crypto"], {"ETHUSDT", "SOLUSDT", "BNBUSDT"})
+        self.assertEqual(grouped["tradfi"], {"ESUSDT", "NQUSDT", "GCUSDT"})
+
 
 if __name__ == "__main__":
     unittest.main()

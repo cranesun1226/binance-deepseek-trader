@@ -483,6 +483,98 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertIsNone(active_symbol)
         self.assertEqual(updated_state, slot_state)
 
+    def test_active_without_position_excludes_stale_and_same_universe_recent_symbols(self):
+        slot = _active_slot()
+        slot_state = {
+            "slot_id": "active_1",
+            "kind": "active",
+            "symbol": "ETHUSDT",
+            "previous_active_symbol": "AAVEUSDT",
+        }
+
+        def fail_cycle_dir():
+            raise AssertionError("waiting for active candidate should not create db artifact")
+
+        with patch(
+            "src.strategy.portfolio_strategy._screen_active_candidate",
+            side_effect=portfolio_strategy.NoActiveCandidateError("no candidate"),
+        ) as mocked_screen:
+            result, updated_state, active_symbol = portfolio_strategy._run_active_slot(
+                slot=slot,
+                slot_state=slot_state,
+                config=_config(),
+                api_key="key",
+                api_secret="secret",
+                account_overview={"equity": 1000.0, "available_balance": 500.0},
+                open_positions=[],
+                reserved_symbols=set(),
+                as_of_ms=1,
+                cycle_dir_factory=fail_cycle_dir,
+                notification_callback=None,
+                recent_universe_symbols={"SOLUSDT"},
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["action"], "waiting_for_active_candidate")
+        self.assertIsNone(active_symbol)
+        self.assertEqual(updated_state, slot_state)
+        excluded_symbols = set(mocked_screen.call_args.kwargs["excluded_symbols"])
+        self.assertIn("ETHUSDT", excluded_symbols)
+        self.assertIn("AAVEUSDT", excluded_symbols)
+        self.assertIn("SOLUSDT", excluded_symbols)
+
+    def test_active_replacement_remembers_stale_symbol_as_previous(self):
+        slot = _active_slot()
+        slot_state = {
+            "slot_id": "active_1",
+            "kind": "active",
+            "symbol": "ETHUSDT",
+            "previous_active_symbol": "AAVEUSDT",
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "src.strategy.portfolio_strategy._screen_active_candidate",
+            return_value={
+                "symbol": "BNBUSDT",
+                "screening_decision": "LONG",
+                "screening_direction": "up",
+                "close_prices": [300.0, 305.0, 310.0],
+                "decision_source": "active_screener",
+                "selection": {},
+                "metadata": {},
+            },
+        ) as mocked_screen, patch("src.strategy.portfolio_strategy._reference_price", return_value=310.0), patch(
+            "src.strategy.portfolio_strategy.get_account_overview",
+            return_value={"equity": 1000.0, "available_balance": 500.0},
+        ), patch(
+            "src.strategy.portfolio_strategy._place_direction_position",
+            return_value={"success": True, "action": "opened_new_position", "position": {"symbol": "BNBUSDT"}},
+        ), patch(
+            "src.strategy.portfolio_strategy._sync_position_after_trade",
+            return_value={"position": {"symbol": "BNBUSDT"}, "stop_sync": {"success": True}},
+        ):
+            result, updated_state, active_symbol = portfolio_strategy._run_active_slot(
+                slot=slot,
+                slot_state=slot_state,
+                config=_config(),
+                api_key="key",
+                api_secret="secret",
+                account_overview={"equity": 1000.0, "available_balance": 500.0},
+                open_positions=[],
+                reserved_symbols=set(),
+                as_of_ms=1,
+                cycle_dir_factory=lambda: temp_dir,
+                notification_callback=None,
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(active_symbol, "BNBUSDT")
+        self.assertEqual(updated_state["symbol"], "BNBUSDT")
+        self.assertEqual(updated_state["previous_active_symbol"], "ETHUSDT")
+        excluded_symbols = set(mocked_screen.call_args.kwargs["excluded_symbols"])
+        self.assertIn("ETHUSDT", excluded_symbols)
+        self.assertIn("AAVEUSDT", excluded_symbols)
+
     def test_active_new_candidate_uses_screening_decision_without_deepseek(self):
         slot = _active_slot()
         slot_state = {

@@ -617,7 +617,12 @@ def _empty_slot_state(slot: PortfolioSlot) -> Dict[str, Any]:
     if slot.kind == "active":
         state["entered_at"] = None
         state["last_active_rank_checked_at"] = None
+        state["previous_active_symbol"] = None
     return state
+
+
+def _active_screening_mode(slot: PortfolioSlot) -> str:
+    return "tradfi" if str(slot.active_screening_mode or "").strip().lower() == "tradfi" else "crypto"
 
 
 def _normalize_slot_state(slot: PortfolioSlot, raw_state: Any) -> Dict[str, Any]:
@@ -637,10 +642,41 @@ def _normalize_slot_state(slot: PortfolioSlot, raw_state: Any) -> Dict[str, Any]
                 state[key] = raw_state.get(key)
         if slot.kind == "active":
             state["symbol"] = _normalize_symbol(raw_state.get("symbol"))
+            state["previous_active_symbol"] = _normalize_symbol(
+                raw_state.get("previous_active_symbol")
+            )
     if slot.kind == "passive":
         state["symbol"] = slot.symbol
     state["last_ai_decision"] = _normalize_ai_decision(state.get("last_ai_decision"))
     return state
+
+
+def _active_slot_memory_symbols(slot_state: Dict[str, Any]) -> list[str]:
+    symbols: list[str] = []
+    for key in ("symbol", "previous_active_symbol"):
+        symbol = _normalize_symbol(slot_state.get(key))
+        if symbol and symbol not in symbols:
+            symbols.append(symbol)
+    return symbols
+
+
+def _active_recent_symbols_by_mode(
+    slots: Sequence[PortfolioSlot],
+    portfolio_state: Dict[str, Any],
+) -> dict[str, set[str]]:
+    raw_slots_state = portfolio_state.get("slots")
+    slots_state = raw_slots_state if isinstance(raw_slots_state, dict) else {}
+    grouped: dict[str, set[str]] = {}
+    for slot in slots:
+        if slot.kind != "active":
+            continue
+        slot_state = slots_state.get(slot.slot_id)
+        if not isinstance(slot_state, dict):
+            continue
+        grouped.setdefault(_active_screening_mode(slot), set()).update(
+            _active_slot_memory_symbols(slot_state)
+        )
+    return grouped
 
 
 def _normalize_portfolio_state(previous_state: Optional[Dict[str, Any]], slots: Sequence[PortfolioSlot]) -> Dict[str, Any]:
@@ -679,7 +715,11 @@ def _update_slot_trigger_state(
 ) -> Dict[str, Any]:
     updated = dict(slot_state)
     if symbol is not None:
-        updated["symbol"] = _normalize_symbol(symbol)
+        normalized_symbol = _normalize_symbol(symbol)
+        current_symbol = _normalize_symbol(updated.get("symbol"))
+        if normalized_symbol and current_symbol and normalized_symbol != current_symbol:
+            updated["previous_active_symbol"] = current_symbol
+        updated["symbol"] = normalized_symbol
     if ai_triggered or update_anchor:
         updated["last_ai_trigger_price"] = _normalize_trigger_price(trigger_info.get("trigger_price"))
         updated["last_ai_triggered_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -693,6 +733,9 @@ def _update_slot_trigger_state(
 
 def _clear_active_slot_state(slot_state: Dict[str, Any]) -> Dict[str, Any]:
     updated = dict(slot_state)
+    previous_symbol = _normalize_symbol(updated.get("symbol")) or _normalize_symbol(
+        updated.get("previous_active_symbol")
+    )
     updated["symbol"] = None
     updated["last_ai_trigger_price"] = None
     updated["last_ai_triggered_at"] = None
@@ -701,6 +744,7 @@ def _clear_active_slot_state(slot_state: Dict[str, Any]) -> Dict[str, Any]:
     updated["next_trigger_up"] = None
     updated["entered_at"] = None
     updated["last_active_rank_checked_at"] = None
+    updated["previous_active_symbol"] = previous_symbol
     return updated
 
 
@@ -1337,7 +1381,7 @@ def _screen_active_candidate(
     config: Dict[str, Any],
     excluded_symbols: Sequence[str],
 ) -> Dict[str, Any]:
-    if str(slot.active_screening_mode or "").strip().lower() == "tradfi":
+    if _active_screening_mode(slot) == "tradfi":
         screener_output = screen_active_tradfi_symbol(
             excluded_symbols=excluded_symbols,
             quote=str(config["screener_quote"]),
@@ -1822,12 +1866,18 @@ def _active_exclusions(
     config: Dict[str, Any],
     open_positions: Sequence[Dict[str, Any]],
     reserved_symbols: set[str],
+    recent_universe_symbols: Sequence[str] = (),
     old_symbol: Optional[str] = None,
     allowed_symbol: Optional[str] = None,
 ) -> list[str]:
     allowed = _normalize_symbol(allowed_symbol)
     excluded = set(config["passive_symbols"])
     excluded.update(symbol for symbol in reserved_symbols if _normalize_symbol(symbol) != allowed)
+    excluded.update(
+        symbol
+        for symbol in (_normalize_symbol(value) for value in recent_universe_symbols)
+        if symbol and symbol != allowed
+    )
     for position in open_positions:
         symbol = _position_symbol(position)
         if symbol and symbol != allowed:
@@ -1850,8 +1900,17 @@ def _run_active_slot(
     as_of_ms: int,
     cycle_dir_factory: CycleDirFactory,
     notification_callback: NotificationCallback,
+    recent_universe_symbols: Sequence[str] = (),
 ) -> tuple[Dict[str, Any], Dict[str, Any], Optional[str]]:
     state_symbol = _normalize_symbol(slot_state.get("symbol"))
+    slot_universe_symbols = {
+        symbol
+        for symbol in (
+            _normalize_symbol(value)
+            for value in list(recent_universe_symbols) + _active_slot_memory_symbols(slot_state)
+        )
+        if symbol
+    }
     positions_by_symbol = _positions_by_symbol(open_positions)
     position = positions_by_symbol.get(state_symbol) if state_symbol else None
     current_symbol = _position_symbol(position) if isinstance(position, dict) else None
@@ -1936,6 +1995,7 @@ def _run_active_slot(
                     config=config,
                     open_positions=open_positions,
                     reserved_symbols=reserved_symbols,
+                    recent_universe_symbols=slot_universe_symbols,
                     allowed_symbol=current_symbol,
                 ),
             )
@@ -2169,7 +2229,8 @@ def _run_active_slot(
                     config=config,
                     open_positions=open_positions,
                     reserved_symbols=reserved_symbols,
-                    old_symbol=current_symbol,
+                    recent_universe_symbols=slot_universe_symbols,
+                    old_symbol=state_symbol,
                 ),
             )
         except NoActiveCandidateError as exc:
@@ -2347,6 +2408,7 @@ def run_portfolio_cycle(
         positions = get_positions(api_key, api_secret) or []
 
     reserved_symbols: set[str] = set()
+    recent_active_symbols_by_mode = _active_recent_symbols_by_mode(slots, portfolio_state)
     for slot in slots:
         positions = get_positions(api_key, api_secret)
         if positions is None:
@@ -2388,8 +2450,15 @@ def run_portfolio_cycle(
                 as_of_ms=resolved_as_of_ms,
                 cycle_dir_factory=ensure_cycle_dir,
                 notification_callback=notification_callback,
+                recent_universe_symbols=recent_active_symbols_by_mode.get(
+                    _active_screening_mode(slot),
+                    set(),
+                ),
             )
             portfolio_state["slots"][slot.slot_id] = updated_slot_state
+            recent_active_symbols_by_mode.setdefault(_active_screening_mode(slot), set()).update(
+                _active_slot_memory_symbols(updated_slot_state)
+            )
             if reserved_active_symbol:
                 reserved_symbols.add(reserved_active_symbol)
 
