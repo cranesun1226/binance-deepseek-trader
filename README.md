@@ -24,8 +24,9 @@ This project runs an eight-slot portfolio loop across four fixed 2x-leverage pas
   - 기본 총 투입률 99%, passive 2x / active 2x 레버리지
 - 리스크 관리
   - 각 포지션 진입가 기준 4% stop loss 동기화
-  - 마지막 슬롯 판단 기준가에서 ±1% 이동 시 재판단
-  - 목표 비중에서 벗어나면 리밸런싱
+  - Passive는 마지막 판단 기준가에서 ±1% 이동 시 재판단
+  - Active는 포지션 보유 중 재스크리닝/전환 없이 4% stop loss 또는 외부/수동 포지션 정리까지 유지
+  - Passive는 목표 비중에서 벗어나면 리밸런싱
   - 자동화 계좌 전용 전제: 관리되지 않는 수동 포지션은 자동 청산 대상
 - 알림
   - Telegram 메시지
@@ -54,7 +55,7 @@ Passive LLM에는 한 번에 한 종목의 `symbol`, 현재 `reference_price`, �
 
 Active 1과 Active 3은 crypto USDT-M perpetual을, Active 2와 Active 4는 TradFi USDT-M perpetual을 대상으로 합니다. passive 심볼과 이미 관리 중인 심볼은 제외하며, 앞선 active 슬롯이 선택한 심볼도 뒤 슬롯에서 제외됩니다.
 
-각 후보는 `ai_prompt_timeframe`의 `ai_prompt_candle_count`개 종가를 가져와 `abs(last_close-first_close)/((last_close+first_close)/2)`로 계산한 `close_range_volatility`가 큰 순서로 선정합니다. 기본값은 168개의 1시간봉 종가입니다. Active 방향은 같은 종가 구간의 `last_close > first_close`이면 `LONG`, `last_close < first_close`이면 `SHORT`입니다. 보합 후보는 active 진입 후보에서 제외됩니다. 랭킹 전에 Binance가 최신으로 반환한 2개의 1시간봉 high/low range를 검사하며, 둘 중 하나라도 4%를 넘으면 후보에서 제외합니다. 이 최신 2개에는 반드시 현재 진행 중인 1시간봉과 그 직전 1시간봉이 포함됩니다. 완전히 닫힌 봉 2개만 보는 방식이 아닙니다.
+각 후보는 `ai_prompt_timeframe`의 `ai_prompt_candle_count`개 종가를 가져와 `abs(last_close-first_close)/((last_close+first_close)/2)`로 계산한 `close_range_volatility`가 큰 순서로 선정합니다. 기본값은 168개의 1시간봉 종가입니다. Active 방향은 같은 종가 구간의 `last_close > first_close`이면 `LONG`, `last_close < first_close`이면 `SHORT`입니다. 보합 후보는 active 진입 후보에서 제외됩니다. Active 포지션이 열린 뒤에는 1% 트리거로 재스크리닝하지 않으며, 4% stop loss 또는 외부/수동 포지션 정리 전까지 유지합니다. 랭킹 전에 Binance가 최신으로 반환한 2개의 1시간봉 high/low range를 검사하며, 둘 중 하나라도 4%를 넘으면 후보에서 제외합니다. 이 최신 2개에는 반드시 현재 진행 중인 1시간봉과 그 직전 1시간봉이 포함됩니다. 완전히 닫힌 봉 2개만 보는 방식이 아닙니다.
 
 ### 설치
 
@@ -237,8 +238,9 @@ python -m py_compile main.py src/ai/deepseek_trader.py src/strategy/portfolio_st
   - 99% default capital usage, 2x passive leverage and 2x active leverage
 - Risk management
   - Native stop loss synchronized at 4% from entry price
-  - Re-evaluates a slot after a ±1% move from the last slot decision anchor
-  - Rebalances toward target slot weights
+  - Passive slots re-evaluate after a ±1% move from the last decision anchor
+  - Active slots do not re-screen or switch while a position is open; they hold until the 4% stop loss or external/manual position cleanup closes the position
+  - Passive slots rebalance toward target slot weights
   - Designed for a dedicated automation account: unmanaged manual positions may be closed automatically
 - Notifications
   - Telegram messages
@@ -267,7 +269,7 @@ The passive LLM receives only one symbol at a time: `symbol`, live `reference_pr
 
 Active 1 and Active 3 screen crypto USDT-M perpetuals. Active 2 and Active 4 screen TradFi USDT-M perpetuals. Passive symbols, already-managed symbols, and symbols selected by earlier active slots in the same cycle are excluded.
 
-For each candidate, the screener fetches `ai_prompt_candle_count` closes on `ai_prompt_timeframe` and ranks by `close_range_volatility = abs(last_close-first_close)/((last_close+first_close)/2)`, highest first. The default is 168 recent 1h closes. Active direction comes from the same close window: `LONG` when `last_close > first_close`, and `SHORT` when `last_close < first_close`. Flat candidates are excluded from active entries. Before ranking, the screener checks the high/low range of the latest two 1h klines returned by Binance and excludes a candidate if either one exceeds 4%. These latest two klines intentionally include the currently forming 1h candle and the immediately preceding candle; the filter does not use only fully closed candles.
+For each candidate, the screener fetches `ai_prompt_candle_count` closes on `ai_prompt_timeframe` and ranks by `close_range_volatility = abs(last_close-first_close)/((last_close+first_close)/2)`, highest first. The default is 168 recent 1h closes. Active direction comes from the same close window: `LONG` when `last_close > first_close`, and `SHORT` when `last_close < first_close`. Flat candidates are excluded from active entries. After an active position opens, the slot does not re-screen on the 1% trigger; it holds until the 4% stop loss or external/manual position cleanup closes the position. Before ranking, the screener checks the high/low range of the latest two 1h klines returned by Binance and excludes a candidate if either one exceeds 4%. These latest two klines intentionally include the currently forming 1h candle and the immediately preceding candle; the filter does not use only fully closed candles.
 
 ### Installation
 

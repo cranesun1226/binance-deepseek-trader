@@ -47,6 +47,7 @@ ACTION_LABELS = {
     "kept_position_size": "Position kept, stop checked",
     "kept_position_by_ai": "Position kept by AI",
     "kept_position_by_screening": "Position kept by screening",
+    "kept_active_position_until_stop_loss": "Active position held until stop-loss",
     "opened_new_position": "Opened new position",
     "reversed_position": "Reversed position",
     "increased_position": "Increased position",
@@ -56,6 +57,7 @@ ACTION_LABELS = {
     "candidate_screening_direction_unavailable": "Candidate screening direction unavailable",
     "ai_decision_failed": "AI decision failed",
     "entry_order_failed": "Entry order failed",
+    "stop_loss_sync_failed": "Stop-loss sync failed",
     "reference_price_unavailable": "Reference price unavailable",
 }
 

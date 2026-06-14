@@ -348,7 +348,7 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertEqual(result["leverage"], 2)
         mocked_screen.assert_not_called()
 
-    def test_active_existing_same_direction_uses_screening_without_deepseek(self):
+    def test_active_existing_position_ignores_price_trigger_and_only_syncs_stop_loss(self):
         slot = _active_slot()
         slot_state = {
             "slot_id": "active_1",
@@ -377,7 +377,10 @@ class PortfolioFlowTests(unittest.TestCase):
                 "selection": {},
                 "metadata": {},
             },
-        ) as mocked_screen:
+        ) as mocked_screen, patch(
+            "src.strategy.portfolio_strategy._sync_fixed_stop_loss",
+            return_value={"success": True, "changed": False, "stop_loss_pct": 0.04},
+        ) as mocked_stop:
             result, updated_state, active_symbol = portfolio_strategy._run_active_slot(
                 slot=slot,
                 slot_state=slot_state,
@@ -394,17 +397,17 @@ class PortfolioFlowTests(unittest.TestCase):
 
         self.assertTrue(result["success"])
         self.assertFalse(result["ai_triggered"])
-        self.assertTrue(result["screening_triggered"])
-        self.assertEqual(result["action"], "kept_position_by_screening")
-        self.assertEqual(result["screening_decision"], "LONG")
+        self.assertFalse(result["screening_triggered"])
+        self.assertEqual(result["action"], "kept_active_position_until_stop_loss")
+        self.assertIsNone(result["screening_decision"])
         self.assertEqual(active_symbol, "ETHUSDT")
         self.assertEqual(updated_state["symbol"], "ETHUSDT")
         self.assertEqual(updated_state["last_ai_decision"], "LONG")
         mocked_ai.assert_not_called()
-        mocked_rebalance.assert_called_once()
-        self.assertEqual(mocked_rebalance.call_args.kwargs["leverage"], 2)
+        mocked_rebalance.assert_not_called()
         self.assertEqual(result["leverage"], 2)
-        mocked_screen.assert_called_once()
+        mocked_screen.assert_not_called()
+        mocked_stop.assert_called_once()
 
     def test_active_screener_failure_does_not_create_db_artifact_without_position_event(self):
         slot = _active_slot()
@@ -577,7 +580,7 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertEqual(updated_state, slot_state)
         mocked_ai.assert_not_called()
 
-    def test_active_opposite_direction_closes_then_screens_new_candidate(self):
+    def test_active_existing_position_does_not_close_or_switch_on_price_trigger(self):
         slot = _active_slot()
         slot_state = {
             "slot_id": "active_1",
@@ -616,7 +619,10 @@ class PortfolioFlowTests(unittest.TestCase):
         ) as mocked_place, patch(
             "src.strategy.portfolio_strategy._sync_position_after_trade",
             return_value={"position": {"symbol": "SOLUSDT"}, "stop_sync": {"success": True}},
-        ):
+        ), patch(
+            "src.strategy.portfolio_strategy._sync_fixed_stop_loss",
+            return_value={"success": True, "changed": False, "stop_loss_pct": 0.04},
+        ) as mocked_stop:
             result, updated_state, active_symbol = portfolio_strategy._run_active_slot(
                 slot=slot,
                 slot_state=slot_state,
@@ -633,18 +639,18 @@ class PortfolioFlowTests(unittest.TestCase):
 
         self.assertTrue(result["success"])
         self.assertFalse(result["ai_triggered"])
-        self.assertTrue(result["screening_triggered"])
-        self.assertEqual(result["screening_decision"], "LONG")
-        self.assertEqual(result["symbol"], "SOLUSDT")
-        self.assertEqual(updated_state["symbol"], "SOLUSDT")
+        self.assertFalse(result["screening_triggered"])
+        self.assertIsNone(result["screening_decision"])
+        self.assertEqual(result["action"], "kept_active_position_until_stop_loss")
+        self.assertEqual(result["symbol"], "ETHUSDT")
+        self.assertEqual(updated_state["symbol"], "ETHUSDT")
         self.assertEqual(updated_state["last_ai_decision"], "LONG")
-        self.assertEqual(active_symbol, "SOLUSDT")
+        self.assertEqual(active_symbol, "ETHUSDT")
         mocked_ai.assert_not_called()
-        mocked_close.assert_called_once()
-        mocked_screen.assert_called_once()
-        self.assertNotIn("ETHUSDT", mocked_screen.call_args.kwargs["excluded_symbols"])
-        mocked_place.assert_called_once()
-        self.assertEqual(mocked_place.call_args.kwargs["decision"], "LONG")
+        mocked_close.assert_not_called()
+        mocked_screen.assert_not_called()
+        mocked_place.assert_not_called()
+        mocked_stop.assert_called_once()
 
 
 if __name__ == "__main__":

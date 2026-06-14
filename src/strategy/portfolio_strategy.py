@@ -1773,154 +1773,22 @@ def _run_active_slot(
         position["leverage"] = _normalize_positive_int(leverage_sync.get("actual_leverage"), leverage)
 
         reference_price = _reference_price(current_symbol)
-        if reference_price is None:
-            result["action"] = "reference_price_unavailable"
-            return result, slot_state, current_symbol
         result["symbol"] = current_symbol
         result["current_price"] = reference_price
-        trigger_info = _determine_ai_trigger(
-            has_position=True,
-            current_price=reference_price,
-            slot_state=slot_state,
-            trigger_pct_usdt=float(config["trigger_pct_usdt"]),
-        )
-        result.update(
-            {
-                "trigger_reason": trigger_info.get("reason"),
-                "trigger_price": trigger_info.get("trigger_price"),
-                "next_trigger_down": trigger_info.get("next_trigger_down"),
-                "next_trigger_up": trigger_info.get("next_trigger_up"),
-            }
-        )
-        if not bool(trigger_info.get("should_trigger")):
-            last_decision = _normalize_ai_decision(slot_state.get("last_ai_decision"))
-            if last_decision is None:
-                result["action"] = "missing_ai_decision_for_rebalance"
-                result["position"] = calculate_position_metrics(position)
-                return result, slot_state, current_symbol
-            execution = _rebalance_existing_position(
-                api_key=api_key,
-                api_secret=api_secret,
-                symbol=current_symbol,
-                position=position,
-                decision=last_decision,
-                target_notional_usdt=target_notional,
-                reference_price=reference_price,
-                leverage=leverage,
-                available_notional_cap=available_cap,
-                rebalance_threshold_pct=float(config["rebalance_threshold_pct"]),
-                stop_loss_pct=float(config["stop_loss_pct"]),
-            )
-            result["execution"] = execution
-            result["position"] = execution.get("position") or calculate_position_metrics(position)
-            result["stop_sync"] = execution.get("stop_sync")
-            result["action"] = str(execution.get("action") or "kept_position_size")
-            result["success"] = bool(execution.get("success"))
-            updated_state = _update_slot_trigger_state(
-                slot_state,
-                ai_triggered=False,
-                trigger_info=trigger_info,
-                symbol=current_symbol,
-            )
-            return result, updated_state, current_symbol
-
-        screenable_positions = [row for row in open_positions if _position_symbol(row) != current_symbol]
-        try:
-            candidate = _screen_active_candidate(
-                slot=slot,
-                config=config,
-                excluded_symbols=_active_exclusions(
-                    config=config,
-                    open_positions=screenable_positions,
-                    reserved_symbols=reserved_symbols,
-                ),
-            )
-        except NoActiveCandidateError as exc:
-            result["success"] = True
-            result["action"] = "waiting_for_active_candidate"
-            result["error"] = str(exc)
-            result["position"] = calculate_position_metrics(position)
-            return result, slot_state, current_symbol
-        except Exception as exc:
-            result["action"] = "screener_selection_failed"
-            result["error"] = str(exc)
-            result["position"] = calculate_position_metrics(position)
-            return result, slot_state, current_symbol
-
-        candidate_symbol = str(candidate["symbol"])
-        result["symbol"] = candidate_symbol
-        result["candidate_symbol"] = candidate_symbol
-        result["screener"] = _visible_active_candidate(candidate)
-        decision = _apply_active_screening_decision(result, candidate)
-        slot_dir = _slot_artifact_dir(cycle_dir_factory(), slot.slot_id)
-        screener_output = candidate.get("_screener_output")
-        if isinstance(screener_output, dict):
-            _persist_screener_output(slot_dir, screener_output)
-        if decision is None:
-            result["action"] = "candidate_screening_direction_unavailable"
-            return result, slot_state, current_symbol
-
-        current_direction = _position_direction(position)
-        desired_direction = _decision_to_position_direction(decision)
-        if desired_direction is None:
-            result["action"] = "candidate_screening_direction_unavailable"
-            return result, slot_state, current_symbol
-
-        if candidate_symbol == current_symbol:
-            execution = _rebalance_existing_position(
-                api_key=api_key,
-                api_secret=api_secret,
-                symbol=current_symbol,
-                position=position,
-                decision=decision,
-                target_notional_usdt=target_notional,
-                reference_price=reference_price,
-                leverage=leverage,
-                available_notional_cap=available_cap,
-                rebalance_threshold_pct=float(config["rebalance_threshold_pct"]),
-                stop_loss_pct=float(config["stop_loss_pct"]),
-            )
-            result["execution"] = execution
-            result["position"] = execution.get("position") or calculate_position_metrics(position)
-            result["stop_sync"] = execution.get("stop_sync")
-            result["success"] = bool(execution.get("success"))
-            execution_action = str(execution.get("action") or "execution_failed")
-            if result["success"] and current_direction == desired_direction and execution_action == "kept_position_size":
-                result["action"] = "kept_position_by_screening"
-            else:
-                result["action"] = execution_action
-            updated_state = _update_slot_trigger_state(
-                slot_state,
-                ai_triggered=False,
-                trigger_info=trigger_info,
-                ai_decision=decision,
-                symbol=current_symbol,
-                update_anchor=True,
-            )
-            _emit_active_screening_after(
-                notification_callback=notification_callback,
-                slot=slot,
-                candidate=candidate,
-                result=result,
-                reference_price=reference_price,
-                trigger_info=trigger_info,
-                config=config,
-                position_before=position,
-            )
-            return result, updated_state, current_symbol
-
-        close_result = _close_existing_position(
+        stop_sync = _sync_fixed_stop_loss(
             api_key=api_key,
             api_secret=api_secret,
+            symbol=current_symbol,
             position=position,
-            context="active_switch_position",
+            stop_loss_pct=float(config["stop_loss_pct"]),
         )
-        result["close"] = close_result
-        if not bool(close_result.get("success")):
-            result["action"] = "switch_close_failed"
-            return result, slot_state, current_symbol
-        slot_state = _clear_active_slot_state(slot_state)
-        open_positions = [row for row in open_positions if _position_symbol(row) != current_symbol]
+        result["position"] = calculate_position_metrics(position)
+        result["stop_sync"] = stop_sync
+        result["success"] = bool(stop_sync.get("success"))
+        result["action"] = "kept_active_position_until_stop_loss" if result["success"] else "stop_loss_sync_failed"
+        updated_state = dict(slot_state)
+        updated_state["symbol"] = current_symbol
+        return result, updated_state, current_symbol
 
     if candidate is None:
         try:

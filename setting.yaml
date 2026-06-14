@@ -3,8 +3,9 @@
 # Trading loop
 cycle_interval_seconds: 60
 
-# Decision trigger: re-evaluate a slot when price moves +/- this percent
-# from that slot's last decision anchor.
+# Passive decision trigger: re-evaluate passive slots when price moves +/-
+# this percent from that slot's last decision anchor. Active slots do not
+# re-screen while a position is open.
 trigger_pct_usdt: 1.0
 
 # Prompt input: 168 recent 1h close prices, with the newest value aligned
@@ -41,6 +42,9 @@ passive_symbols:
 # ai_prompt_candle_count closes on ai_prompt_timeframe.
 # Active direction is LONG when last_close > first_close and SHORT when
 # last_close < first_close. Flat candidates are skipped.
+# Once an active position is open, it is held until the fixed 4% stop loss or
+# external/manual position cleanup closes it; active slots do not use the 1%
+# decision trigger while holding a position.
 # Before ranking, the latest returned 2 klines are filtered by high/low range
 # change <= 4%; this intentionally includes the currently forming 1h candle
 # and the immediately preceding candle, not only fully closed candles.
