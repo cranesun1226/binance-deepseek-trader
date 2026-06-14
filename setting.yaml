@@ -19,9 +19,10 @@ deepseek_max_tokens: 8192
 deepseek_timeout_seconds: 300.0
 
 # Portfolio allocation
-# Passive fixed-symbol slots use 2x leverage; both active slots stay at 1x.
+# All 8 slots target 1/8 margin allocation. Passive fixed-symbol slots use
+# 2x leverage; all active slots also use 2x leverage.
 passive_leverage: 2
-active_leverage: 1
+active_leverage: 2
 capital_usage_ratio: 0.99
 rebalance_threshold_pct: 0.03
 stop_loss_pct: 0.04
@@ -33,10 +34,14 @@ passive_symbols:
   - QQQUSDT
   - BTCUSDT
 
-# active1 screens crypto USDT perpetuals.
-# active2 screens TradFi USDT perpetuals.
-# Both active slots select the highest-scoring 1-week trend candidate using
+# active1 and active3 screen crypto USDT perpetuals.
+# active2 and active4 screen TradFi USDT perpetuals.
+# Active candidates are ranked by close_range_volatility:
+# abs(max(close)-min(close))/((max(close)+min(close))/2), using
 # ai_prompt_candle_count closes on ai_prompt_timeframe.
+# Before ranking, the latest returned 2 klines are filtered by high/low range
+# change <= 4%; this intentionally includes the currently forming 1h candle
+# and the immediately preceding candle, not only fully closed candles.
 
 # Binance public API stability knobs for active screening.
 screener_quote: USDT

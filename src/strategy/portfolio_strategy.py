@@ -1,4 +1,4 @@
-"""Six-slot Binance futures portfolio runtime powered by DeepSeek."""
+"""Eight-slot Binance futures portfolio runtime powered by DeepSeek."""
 
 from __future__ import annotations
 
@@ -249,14 +249,28 @@ def _build_portfolio_slots(config: Dict[str, Any]) -> list[PortfolioSlot]:
                 slot_id="active_1",
                 label="active1",
                 kind="active",
-                target_margin_ratio=0.25,
+                target_margin_ratio=0.125,
                 active_screening_mode="crypto",
             ),
             PortfolioSlot(
                 slot_id="active_2",
                 label="active2",
                 kind="active",
-                target_margin_ratio=0.25,
+                target_margin_ratio=0.125,
+                active_screening_mode="tradfi",
+            ),
+            PortfolioSlot(
+                slot_id="active_3",
+                label="active3",
+                kind="active",
+                target_margin_ratio=0.125,
+                active_screening_mode="crypto",
+            ),
+            PortfolioSlot(
+                slot_id="active_4",
+                label="active4",
+                kind="active",
+                target_margin_ratio=0.125,
                 active_screening_mode="tradfi",
             ),
         ]
@@ -1811,7 +1825,7 @@ def _run_active_slot(
     reference_price = _reference_price(candidate_symbol)
     if reference_price is None:
         result["action"] = "candidate_reference_price_unavailable"
-        return result, slot_state, None
+        return result, slot_state, candidate_symbol
     result["current_price"] = reference_price
     trigger_info = _determine_ai_trigger(
         has_position=False,
@@ -1851,7 +1865,7 @@ def _run_active_slot(
         result["error"] = ai_error
     if decision is None:
         result["action"] = "candidate_ai_decision_failed"
-        return result, slot_state, None
+        return result, slot_state, candidate_symbol
     fresh_overview = get_account_overview(api_key, api_secret) or account_overview
     available_cap = _available_notional_cap(
         available_balance=float(fresh_overview.get("available_balance", account_overview.get("available_balance", 0.0))),
@@ -1891,7 +1905,7 @@ def _run_active_slot(
         ai_decision=decision,
         symbol=candidate_symbol if result["success"] else None,
     )
-    return result, updated_state, candidate_symbol if result["success"] else None
+    return result, updated_state, candidate_symbol
 
 
 def run_portfolio_cycle(
@@ -1900,7 +1914,7 @@ def run_portfolio_cycle(
     as_of_ms: Optional[int] = None,
     notification_callback: NotificationCallback = None,
 ) -> Dict[str, Any]:
-    """Run one full six-slot portfolio cycle and return a serializable result payload."""
+    """Run one full eight-slot portfolio cycle and return a serializable result payload."""
     config = _load_strategy_config()
     slots = _build_portfolio_slots(config)
     resolved_as_of_ms = _resolve_as_of_ms(as_of_ms)
@@ -1995,7 +2009,7 @@ def run_portfolio_cycle(
             if slot.symbol:
                 reserved_symbols.add(slot.symbol)
         else:
-            slot_result, updated_slot_state, active_symbol = _run_active_slot(
+            slot_result, updated_slot_state, reserved_active_symbol = _run_active_slot(
                 slot=slot,
                 slot_state=slot_state,
                 config=config,
@@ -2009,8 +2023,8 @@ def run_portfolio_cycle(
                 notification_callback=notification_callback,
             )
             portfolio_state["slots"][slot.slot_id] = updated_slot_state
-            if active_symbol:
-                reserved_symbols.add(active_symbol)
+            if reserved_active_symbol:
+                reserved_symbols.add(reserved_active_symbol)
 
         result["slot_results"].append(slot_result)
         if bool(slot_result.get("ai_triggered")):

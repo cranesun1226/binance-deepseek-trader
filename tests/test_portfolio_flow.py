@@ -12,7 +12,7 @@ def _config():
         "trigger_pct_usdt": 1.0,
         "fixed_leverage": 1,
         "passive_leverage": 2,
-        "active_leverage": 1,
+        "active_leverage": 2,
         "stop_loss_pct": 0.04,
         "capital_usage_ratio": 0.99,
         "rebalance_threshold_pct": 0.03,
@@ -35,7 +35,7 @@ def _active_slot():
         slot_id="active_1",
         label="active1",
         kind="active",
-        target_margin_ratio=0.25,
+        target_margin_ratio=0.125,
     )
 
 
@@ -44,7 +44,7 @@ def _active2_slot():
         slot_id="active_2",
         label="active2",
         kind="active",
-        target_margin_ratio=0.25,
+        target_margin_ratio=0.125,
         active_screening_mode="tradfi",
     )
 
@@ -66,7 +66,7 @@ def _long_position(symbol="ETHUSDT"):
         "side": "Buy",
         "entryPrice": "100",
         "markPrice": "100.5",
-        "leverage": "1",
+        "leverage": "2",
         "positionValue": "201",
     }
 
@@ -78,7 +78,7 @@ def _short_position(symbol="ETHUSDT"):
         "side": "Sell",
         "entryPrice": "100",
         "markPrice": "99.5",
-        "leverage": "1",
+        "leverage": "2",
         "positionValue": "199",
     }
 
@@ -377,8 +377,8 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertEqual(updated_state["symbol"], "ETHUSDT")
         mocked_ai.assert_called_once()
         mocked_rebalance.assert_called_once()
-        self.assertEqual(mocked_rebalance.call_args.kwargs["leverage"], 1)
-        self.assertEqual(result["leverage"], 1)
+        self.assertEqual(mocked_rebalance.call_args.kwargs["leverage"], 2)
+        self.assertEqual(result["leverage"], 2)
         mocked_screen.assert_not_called()
 
     def test_active_screener_failure_does_not_create_db_artifact_without_position_event(self):
@@ -429,7 +429,7 @@ class PortfolioFlowTests(unittest.TestCase):
         with patch(
             "src.strategy.portfolio_strategy._screen_active_candidate",
             side_effect=portfolio_strategy.NoActiveCandidateError(
-                "active crypto trend screener found no candidate with at least 168 1h valid close-price klines"
+                "active crypto volatility screener found no candidate with at least 168 1h valid close-price klines"
             ),
         ):
             result, updated_state, active_symbol = portfolio_strategy._run_active_slot(
@@ -450,6 +450,40 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertFalse(result["ai_triggered"])
         self.assertEqual(result["action"], "waiting_for_active_candidate")
         self.assertIsNone(active_symbol)
+        self.assertEqual(updated_state, slot_state)
+
+    def test_active_candidate_ai_failure_still_reserves_candidate_for_cycle(self):
+        slot = _active_slot()
+        slot_state = {
+            "slot_id": "active_1",
+            "kind": "active",
+            "symbol": None,
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "src.strategy.portfolio_strategy._screen_active_candidate",
+            return_value={"symbol": "SOLUSDT", "selection": {}, "metadata": {}},
+        ), patch("src.strategy.portfolio_strategy._reference_price", return_value=55.0), patch(
+            "src.strategy.portfolio_strategy._evaluate_slot_direction",
+            return_value=(None, {"error": "invalid"}, {}),
+        ):
+            result, updated_state, active_symbol = portfolio_strategy._run_active_slot(
+                slot=slot,
+                slot_state=slot_state,
+                config=_config(),
+                api_key="key",
+                api_secret="secret",
+                account_overview={"equity": 1000.0, "available_balance": 500.0},
+                open_positions=[],
+                reserved_symbols=set(),
+                as_of_ms=1,
+                cycle_dir_factory=lambda: temp_dir,
+                notification_callback=None,
+            )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["action"], "candidate_ai_decision_failed")
+        self.assertEqual(active_symbol, "SOLUSDT")
         self.assertEqual(updated_state, slot_state)
 
     def test_active_opposite_direction_closes_then_screens_new_candidate(self):

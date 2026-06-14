@@ -1,9 +1,8 @@
-"""Active USDT-M perpetual screening by one-week trend quality."""
+"""Active USDT-M perpetual screening by close-range volatility."""
 
 from __future__ import annotations
 
 import math
-import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Sequence
 
@@ -23,25 +22,13 @@ from src.strategy.runtime_config import DEFAULT_AI_PROMPT_CANDLE_COUNT, DEFAULT_
 
 logger = get_logger("active_screener")
 
-TREND_CANDIDATE_REPORT_LIMIT = 10
-TREND_REJECTION_LOG_LIMIT = 20
-TREND_STRENGTH_CAP = 100.0
-HOURLY_CANDLES_PER_DAY = 24
-HOURLY_CANDLES_PER_WEEK = HOURLY_CANDLES_PER_DAY * 7
+VOLATILITY_CANDIDATE_REPORT_LIMIT = 10
+VOLATILITY_REJECTION_LOG_LIMIT = 20
+VOLATILITY_RANKING_METRIC = "close_range_volatility"
+VOLATILITY_RANKING_FORMULA = "abs(max(close)-min(close))/((max(close)+min(close))/2)"
 EPSILON = 1e-12
 RECENT_KLINE_RANGE_LOOKBACK = 2
 RECENT_KLINE_RANGE_CHANGE_LIMIT = 0.04
-
-TREND_SCORE_WEIGHTS: dict[str, float] = {
-    "trend_strength": 0.22,
-    "linearity": 0.18,
-    "efficiency": 0.18,
-    "directional_consistency": 0.15,
-    "weekly_consistency": 0.12,
-    "daily_consistency": 0.07,
-    "adverse_score": 0.05,
-    "trend_magnitude": 0.03,
-}
 
 
 class NoActiveCandidateError(RuntimeError):
@@ -212,6 +199,12 @@ def extract_recent_kline_range_changes(
     *,
     lookback: int = RECENT_KLINE_RANGE_LOOKBACK,
 ) -> list[float]:
+    """Return range changes for the latest returned klines.
+
+    Binance futures klines are evaluated exactly as returned by the API. With the
+    default 1h interval, this means the latest two returned klines include the
+    currently forming 1h candle and the immediately preceding candle.
+    """
     lookback_count = max(1, safe_int(lookback, RECENT_KLINE_RANGE_LOOKBACK))
     rows = list(klines or [])
     if len(rows) < lookback_count:
@@ -253,195 +246,73 @@ def validate_recent_kline_range_filter(
     }
 
 
-def _segment_direction_share(log_prices: Sequence[float], *, segments: int, direction_multiplier: float) -> float:
-    segment_count = max(1, int(segments))
-    if len(log_prices) < 2:
-        return 0.0
-    step = max(1, len(log_prices) // segment_count)
-    aligned = 0
-    valid = 0
-    for index in range(segment_count):
-        start = index * step
-        if start >= len(log_prices) - 1:
-            break
-        end = min((index + 1) * step, len(log_prices) - 1)
-        if index == segment_count - 1:
-            end = len(log_prices) - 1
-        if end <= start:
-            continue
-        valid += 1
-        if direction_multiplier * (log_prices[end] - log_prices[start]) > 0.0:
-            aligned += 1
-    return aligned / valid if valid else 0.0
-
-
-def _scaled_consistency_segments(close_count: int, *, candles_per_period: int) -> int:
-    count = max(1, safe_int(close_count, 1))
-    period = max(1, safe_int(candles_per_period, 1))
-    if count < 2:
-        return 1
-    return max(1, min(count - 1, int(round(count / period))))
-
-
-def calculate_trend_metrics(symbol: str, close_prices: Sequence[Any]) -> Dict[str, Any]:
+def calculate_close_range_volatility_metrics(symbol: str, close_prices: Sequence[Any]) -> Dict[str, Any]:
     normalized_symbol = str(symbol or "").strip().upper()
     if not normalized_symbol:
         raise ValueError("symbol is required")
     prices = [safe_float(value) for value in close_prices or []]
-    if len(prices) < 3:
-        raise ValueError("at least 3 close prices are required")
+    if not prices:
+        raise ValueError("at least 1 close price is required")
     if any(price <= 0.0 for price in prices):
         raise ValueError("close prices must be positive")
 
-    log_prices = [math.log(price) for price in prices]
-    count = len(log_prices)
-    time_mean = (count - 1) / 2.0
-    price_mean = sum(log_prices) / count
-    centered_time = [index - time_mean for index in range(count)]
-    sxx = sum(value * value for value in centered_time)
-    if sxx <= EPSILON:
-        raise ValueError("not enough time variance to fit trend")
-
-    slope = sum(centered_time[index] * (log_prices[index] - price_mean) for index in range(count)) / sxx
-    if abs(slope) <= EPSILON:
-        raise ValueError("trend slope is flat")
-    direction_multiplier = 1.0 if slope > 0.0 else -1.0
-    trend_direction = "LONG" if slope > 0.0 else "SHORT"
-    intercept = price_mean - slope * time_mean
-
-    residuals = [log_prices[index] - (intercept + slope * index) for index in range(count)]
-    sse = sum(value * value for value in residuals)
-    sst = sum((value - price_mean) ** 2 for value in log_prices)
-    linearity = 0.0 if sst <= EPSILON else max(0.0, min(1.0, 1.0 - (sse / sst)))
-    if count > 2 and sse > EPSILON:
-        slope_stderr = math.sqrt((sse / (count - 2)) / sxx)
-        trend_strength = min(TREND_STRENGTH_CAP, abs(slope) / slope_stderr) if slope_stderr > EPSILON else TREND_STRENGTH_CAP
-    else:
-        trend_strength = TREND_STRENGTH_CAP
-
-    returns = [log_prices[index] - log_prices[index - 1] for index in range(1, count)]
-    total_path = sum(abs(value) for value in returns)
-    if total_path <= EPSILON:
-        raise ValueError("price path is flat")
-    net_log_return = log_prices[-1] - log_prices[0]
-    directional_net_return = direction_multiplier * net_log_return
-    if directional_net_return <= 0.0:
-        raise ValueError("endpoint return is not aligned with trend slope")
-
-    same_direction_path = sum(max(direction_multiplier * value, 0.0) for value in returns)
-    directional_consistency = same_direction_path / total_path
-    efficiency = abs(net_log_return) / total_path
-
-    transformed_path = [direction_multiplier * (value - log_prices[0]) for value in log_prices]
-    running_peak = transformed_path[0]
-    max_adverse_excursion = 0.0
-    for value in transformed_path:
-        running_peak = max(running_peak, value)
-        max_adverse_excursion = max(max_adverse_excursion, running_peak - value)
-    adverse_ratio = max_adverse_excursion / max(directional_net_return, EPSILON)
-    adverse_score = 1.0 / (1.0 + adverse_ratio)
-
-    weekly_segments = _scaled_consistency_segments(count, candles_per_period=HOURLY_CANDLES_PER_WEEK)
-    daily_segments = _scaled_consistency_segments(count, candles_per_period=HOURLY_CANDLES_PER_DAY)
-    weekly_consistency = _segment_direction_share(
-        log_prices,
-        segments=weekly_segments,
-        direction_multiplier=direction_multiplier,
-    )
-    daily_consistency = _segment_direction_share(
-        log_prices,
-        segments=daily_segments,
-        direction_multiplier=direction_multiplier,
-    )
-    trend_log_return = slope * (count - 1)
-    realized_volatility = 0.0
-    if len(returns) > 1:
-        return_mean = sum(returns) / len(returns)
-        realized_volatility = math.sqrt(
-            sum((value - return_mean) ** 2 for value in returns) / (len(returns) - 1)
-        ) * math.sqrt(len(returns))
+    max_close = max(prices)
+    min_close = min(prices)
+    midpoint = (max_close + min_close) / 2.0
+    if midpoint <= EPSILON:
+        raise ValueError("close range midpoint must be positive")
+    close_range_volatility = abs(max_close - min_close) / midpoint
+    first_close = prices[0]
+    last_close = prices[-1]
+    net_return_pct = ((last_close - first_close) / first_close) * 100.0 if first_close > EPSILON else 0.0
 
     return {
         "symbol": normalized_symbol,
-        "trend_direction": trend_direction,
-        "close_count": count,
-        "first_close": prices[0],
-        "last_close": prices[-1],
-        "net_return_pct": math.expm1(net_log_return) * 100.0,
-        "trend_return_pct": math.expm1(trend_log_return) * 100.0,
-        "trend_magnitude": abs(trend_log_return),
-        "trend_slope": slope,
-        "trend_strength": trend_strength,
-        "linearity": linearity,
-        "efficiency": efficiency,
-        "directional_consistency": directional_consistency,
-        "weekly_consistency": weekly_consistency,
-        "daily_consistency": daily_consistency,
-        "weekly_consistency_segments": weekly_segments,
-        "daily_consistency_segments": daily_segments,
-        "max_adverse_excursion": max_adverse_excursion,
-        "adverse_ratio": adverse_ratio,
-        "adverse_score": adverse_score,
-        "realized_volatility": realized_volatility,
+        "close_count": len(prices),
+        "first_close": first_close,
+        "last_close": last_close,
+        "min_close": min_close,
+        "max_close": max_close,
+        "close_range_midpoint": midpoint,
+        "close_range_volatility": close_range_volatility,
+        "close_range_volatility_pct": close_range_volatility * 100.0,
+        "net_return_pct": net_return_pct,
+        "ranking_metric": VOLATILITY_RANKING_METRIC,
+        "ranking_formula": VOLATILITY_RANKING_FORMULA,
     }
 
 
-def _percentile_ranks(rows: Sequence[Dict[str, Any]], metric_name: str) -> list[float]:
-    if not rows:
-        return []
-    if len(rows) == 1:
-        return [1.0]
-    indexed_values = sorted(
-        (safe_float(row.get(metric_name)), index)
-        for index, row in enumerate(rows)
-    )
-    ranks = [0.0] * len(rows)
-    position = 0
-    denominator = len(rows) - 1
-    while position < len(indexed_values):
-        end = position
-        value = indexed_values[position][0]
-        while end + 1 < len(indexed_values) and indexed_values[end + 1][0] == value:
-            end += 1
-        rank = ((position + end) / 2.0) / denominator
-        for grouped_index in range(position, end + 1):
-            ranks[indexed_values[grouped_index][1]] = rank
-        position = end + 1
-    return ranks
+def calculate_trend_metrics(symbol: str, close_prices: Sequence[Any]) -> Dict[str, Any]:
+    """Backward-compatible wrapper for the previous trend-metric function name."""
+    return calculate_close_range_volatility_metrics(symbol, close_prices)
 
 
-def score_trend_candidates(rows: Sequence[Dict[str, Any]]) -> list[Dict[str, Any]]:
-    scored = [dict(row) for row in rows]
-    if not scored:
+def rank_volatility_candidates(rows: Sequence[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    ranked = [dict(row) for row in rows]
+    if not ranked:
         return []
-    metric_ranks = {metric_name: _percentile_ranks(scored, metric_name) for metric_name in TREND_SCORE_WEIGHTS}
-    for index, row in enumerate(scored):
-        components = {
-            metric_name: metric_ranks[metric_name][index]
-            for metric_name in TREND_SCORE_WEIGHTS
-        }
-        score = sum(TREND_SCORE_WEIGHTS[metric_name] * components[metric_name] for metric_name in TREND_SCORE_WEIGHTS)
-        row["trend_score"] = score
-        row["score_components"] = components
-        row["score_weights"] = dict(TREND_SCORE_WEIGHTS)
-    scored.sort(
+    for row in ranked:
+        row["ranking_metric"] = VOLATILITY_RANKING_METRIC
+        row["ranking_formula"] = VOLATILITY_RANKING_FORMULA
+    ranked.sort(
         key=lambda row: (
-            -safe_float(row.get("trend_score")),
-            -safe_float(row.get("trend_strength")),
-            -safe_float(row.get("linearity")),
-            -safe_float(row.get("efficiency")),
-            -safe_float(row.get("trend_magnitude")),
+            -safe_float(row.get(VOLATILITY_RANKING_METRIC)),
             str(row.get("symbol") or ""),
         )
     )
-    return scored
+    return ranked
 
 
-def select_active_symbol_from_trend_candidates(
+def score_trend_candidates(rows: Sequence[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    """Backward-compatible wrapper for the previous candidate scoring function name."""
+    return rank_volatility_candidates(rows)
+
+
+def select_active_symbol_from_volatility_candidates(
     candidates: Sequence[Dict[str, Any]],
     *,
     excluded_symbols: Sequence[str],
-    report_limit: int = TREND_CANDIDATE_REPORT_LIMIT,
+    report_limit: int = VOLATILITY_CANDIDATE_REPORT_LIMIT,
 ) -> Dict[str, Any]:
     excluded = _normalize_excluded_symbols(excluded_symbols)
     eligible = [
@@ -449,23 +320,44 @@ def select_active_symbol_from_trend_candidates(
         for candidate in candidates
         if str(candidate.get("symbol") or "").strip().upper() and str(candidate.get("symbol") or "").strip().upper() not in excluded
     ]
-    scored = score_trend_candidates(eligible)
-    selected = scored[0] if scored else None
+    ranked = rank_volatility_candidates(eligible)
+    selected = ranked[0] if ranked else None
     return {
         "symbol": str(selected.get("symbol") or "").upper() if selected else None,
         "selected": selected,
-        "top_candidates": scored[: max(1, int(report_limit))],
-        "candidate_count": len(scored),
+        "top_candidates": ranked[: max(1, int(report_limit))],
+        "candidate_count": len(ranked),
         "excluded_symbols": sorted(excluded),
+        "ranking_metric": VOLATILITY_RANKING_METRIC,
+        "ranking_formula": VOLATILITY_RANKING_FORMULA,
     }
 
 
-def _build_trend_candidate(symbol: str, klines: Sequence[Any], *, required_count: int) -> Dict[str, Any]:
+def select_active_symbol_from_trend_candidates(
+    candidates: Sequence[Dict[str, Any]],
+    *,
+    excluded_symbols: Sequence[str],
+    report_limit: int = VOLATILITY_CANDIDATE_REPORT_LIMIT,
+) -> Dict[str, Any]:
+    """Backward-compatible wrapper for the previous trend-selection function name."""
+    return select_active_symbol_from_volatility_candidates(
+        candidates,
+        excluded_symbols=excluded_symbols,
+        report_limit=report_limit,
+    )
+
+
+def _build_volatility_candidate(symbol: str, klines: Sequence[Any], *, required_count: int) -> Dict[str, Any]:
     range_filter = validate_recent_kline_range_filter(klines)
     close_prices = extract_kline_close_prices(klines, required_count=required_count)
-    candidate = calculate_trend_metrics(symbol, close_prices)
+    candidate = calculate_close_range_volatility_metrics(symbol, close_prices)
     candidate.update(range_filter)
     return candidate
+
+
+def _build_trend_candidate(symbol: str, klines: Sequence[Any], *, required_count: int) -> Dict[str, Any]:
+    """Backward-compatible wrapper for the previous private candidate builder name."""
+    return _build_volatility_candidate(symbol, klines, required_count=required_count)
 
 
 def _screen_active_universe(
@@ -487,12 +379,12 @@ def _screen_active_universe(
     for symbol in symbols:
         try:
             klines = client.klines(symbol, normalized_interval, normalized_count)
-            candidates.append(_build_trend_candidate(symbol, klines, required_count=normalized_count))
+            candidates.append(_build_volatility_candidate(symbol, klines, required_count=normalized_count))
         except Exception as exc:
-            if len(rejection_samples) < TREND_REJECTION_LOG_LIMIT:
+            if len(rejection_samples) < VOLATILITY_REJECTION_LOG_LIMIT:
                 rejection_samples.append({"symbol": symbol, "error": str(exc)})
             logger.info(
-                "Active trend candidate skipped | %s",
+                "Active volatility candidate skipped | %s",
                 format_log_details(
                     {
                         "symbol": symbol,
@@ -504,7 +396,7 @@ def _screen_active_universe(
                 ),
             )
 
-    selection = select_active_symbol_from_trend_candidates(candidates, excluded_symbols=excluded)
+    selection = select_active_symbol_from_volatility_candidates(candidates, excluded_symbols=excluded)
     selection["screened_symbols"] = len(symbols)
     selection["rejected_count"] = len(symbols) - len(candidates)
     selection["rejection_samples"] = rejection_samples
@@ -513,10 +405,10 @@ def _screen_active_universe(
 
 def _no_candidate_message(screening_mode: str, required_kline_interval: Any, required_kline_count: int) -> str:
     return (
-        f"active {screening_mode} trend screener found no candidate with at least "
+        f"active {screening_mode} volatility screener found no candidate with at least "
         f"{required_kline_count} {to_binance_kline_interval(required_kline_interval)} valid close-price klines "
-        f"and recent {RECENT_KLINE_RANGE_LOOKBACK}-kline range change <= "
-        f"{RECENT_KLINE_RANGE_CHANGE_LIMIT * 100.0:.2f}%"
+        f"and latest returned {RECENT_KLINE_RANGE_LOOKBACK}-kline range change <= "
+        f"{RECENT_KLINE_RANGE_CHANGE_LIMIT * 100.0:.2f}% including the current forming kline"
     )
 
 
@@ -536,7 +428,7 @@ def screen_active_symbol(
         request_sleep=request_sleep,
     )
     logger.info(
-        "Active crypto trend screening started | %s",
+        "Active crypto volatility screening started | %s",
         format_log_details(
             {
                 "quote": quote,
@@ -567,10 +459,13 @@ def screen_active_symbol(
             "universe_symbols": len(universe),
             "required_kline_interval": to_binance_kline_interval(required_kline_interval),
             "required_kline_count": max(1, safe_int(required_kline_count, DEFAULT_AI_PROMPT_CANDLE_COUNT)),
-            "score_weights": dict(TREND_SCORE_WEIGHTS),
+            "ranking_metric": VOLATILITY_RANKING_METRIC,
+            "ranking_formula": VOLATILITY_RANKING_FORMULA,
             "recent_kline_range_filter": {
                 "lookback": RECENT_KLINE_RANGE_LOOKBACK,
                 "change_limit": RECENT_KLINE_RANGE_CHANGE_LIMIT,
+                "uses_latest_returned_klines": True,
+                "includes_current_forming_kline": True,
             },
         },
         "selection": selection,
@@ -593,7 +488,7 @@ def screen_active_tradfi_symbol(
         request_sleep=request_sleep,
     )
     logger.info(
-        "Active TradFi trend screening started | %s",
+        "Active TradFi volatility screening started | %s",
         format_log_details(
             {
                 "quote": quote,
@@ -624,10 +519,13 @@ def screen_active_tradfi_symbol(
             "universe_symbols": len(universe),
             "required_kline_interval": to_binance_kline_interval(required_kline_interval),
             "required_kline_count": max(1, safe_int(required_kline_count, DEFAULT_AI_PROMPT_CANDLE_COUNT)),
-            "score_weights": dict(TREND_SCORE_WEIGHTS),
+            "ranking_metric": VOLATILITY_RANKING_METRIC,
+            "ranking_formula": VOLATILITY_RANKING_FORMULA,
             "recent_kline_range_filter": {
                 "lookback": RECENT_KLINE_RANGE_LOOKBACK,
                 "change_limit": RECENT_KLINE_RANGE_CHANGE_LIMIT,
+                "uses_latest_returned_klines": True,
+                "includes_current_forming_kline": True,
             },
         },
         "selection": selection,
@@ -637,18 +535,22 @@ def screen_active_tradfi_symbol(
 __all__ = [
     "BinanceActiveMarketDataClient",
     "NoActiveCandidateError",
-    "TREND_SCORE_WEIGHTS",
     "RECENT_KLINE_RANGE_CHANGE_LIMIT",
     "RECENT_KLINE_RANGE_LOOKBACK",
+    "VOLATILITY_RANKING_FORMULA",
+    "VOLATILITY_RANKING_METRIC",
     "build_usdt_tradfi_perpetual_universe",
     "build_usdt_perpetual_universe",
+    "calculate_close_range_volatility_metrics",
     "calculate_trend_metrics",
     "extract_kline_close_prices",
     "extract_recent_kline_range_changes",
     "is_tradfi_symbol_info",
+    "rank_volatility_candidates",
     "score_trend_candidates",
     "screen_active_symbol",
     "screen_active_tradfi_symbol",
+    "select_active_symbol_from_volatility_candidates",
     "select_active_symbol_from_trend_candidates",
     "validate_recent_kline_range_filter",
 ]

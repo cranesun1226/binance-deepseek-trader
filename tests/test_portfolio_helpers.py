@@ -5,7 +5,7 @@ from src.strategy import portfolio_strategy
 
 
 class PortfolioHelperTests(unittest.TestCase):
-    def test_default_config_builds_six_slots_in_priority_order(self):
+    def test_default_config_builds_eight_slots_in_priority_order(self):
         config = {
             "passive_symbols": ["CLUSDT", "XAUUSDT", "QQQUSDT", "BTCUSDT"],
         }
@@ -19,11 +19,15 @@ class PortfolioHelperTests(unittest.TestCase):
             "passive_btc",
             "active_1",
             "active_2",
+            "active_3",
+            "active_4",
         ])
         self.assertEqual([slot.symbol for slot in slots[:4]], ["CLUSDT", "XAUUSDT", "QQQUSDT", "BTCUSDT"])
-        self.assertEqual([slot.target_margin_ratio for slot in slots], [0.125, 0.125, 0.125, 0.125, 0.25, 0.25])
+        self.assertEqual([slot.target_margin_ratio for slot in slots], [0.125] * 8)
         self.assertEqual(slots[4].active_screening_mode, "crypto")
         self.assertEqual(slots[5].active_screening_mode, "tradfi")
+        self.assertEqual(slots[6].active_screening_mode, "crypto")
+        self.assertEqual(slots[7].active_screening_mode, "tradfi")
 
     def test_deepseek_reasoning_effort_normalization_matches_api_values(self):
         self.assertEqual(portfolio_strategy._normalize_reasoning_effort("xhigh"), "max")
@@ -36,19 +40,19 @@ class PortfolioHelperTests(unittest.TestCase):
             slot_id="active_1",
             label="active1",
             kind="active",
-            target_margin_ratio=0.25,
+            target_margin_ratio=0.125,
         )
 
         target = portfolio_strategy._target_notional_usdt(
             account_equity=1000.0,
             slot=slot,
             capital_usage_ratio=0.99,
-            leverage=1,
+            leverage=2,
         )
 
         self.assertEqual(target, 247.5)
 
-    def test_slot_leverage_defaults_passive_to_2x_and_active_to_1x(self):
+    def test_slot_leverage_defaults_passive_and_active_to_2x(self):
         passive = portfolio_strategy.PortfolioSlot(
             slot_id="passive_cl",
             label="CLUSDT",
@@ -60,11 +64,11 @@ class PortfolioHelperTests(unittest.TestCase):
             slot_id="active_1",
             label="active1",
             kind="active",
-            target_margin_ratio=0.25,
+            target_margin_ratio=0.125,
         )
 
         self.assertEqual(portfolio_strategy._leverage_for_slot(passive, {}), 2)
-        self.assertEqual(portfolio_strategy._leverage_for_slot(active, {}), 1)
+        self.assertEqual(portfolio_strategy._leverage_for_slot(active, {}), 2)
 
     def test_ensure_symbol_leverage_fails_closed_on_mismatch(self):
         with patch("src.strategy.portfolio_strategy.set_leverage", return_value=1):

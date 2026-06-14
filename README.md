@@ -1,8 +1,8 @@
 # Binance DeepSeek Trader
 
-DeepSeek-powered six-slot Binance USDT-M futures trading bot.
+DeepSeek-powered eight-slot Binance USDT-M futures trading bot.
 
-This project runs a six-slot portfolio loop across four fixed 2x-leverage passive markets and two dynamically screened 1x-leverage active markets. Each slot is evaluated one symbol at a time by DeepSeek using `deepseek-v4-flash` with `max` reasoning effort, then managed with market entries/exits, rebalancing, stop-loss synchronization, and Telegram reporting.
+This project runs an eight-slot portfolio loop across four fixed 2x-leverage passive markets and four dynamically screened 2x-leverage active markets: two crypto USDT-M perpetuals and two TradFi USDT-M perpetuals. Each slot is evaluated one symbol at a time by DeepSeek using `deepseek-v4-flash` with `max` reasoning effort, then managed with market entries/exits, rebalancing, stop-loss synchronization, and Telegram reporting.
 
 > This software is for research and automation experiments. It is not financial advice. Futures trading can lose money quickly, and live mode sends real Binance Futures orders.
 
@@ -14,14 +14,14 @@ This project runs a six-slot portfolio loop across four fixed 2x-leverage passiv
   - 기본 모델: `deepseek-v4-flash`
   - reasoning effort: `max` (`xhigh` legacy values are normalized to `max`; `low`/`medium` map to `high`)
   - DeepSeek JSON Output 응답을 로컬에서 검증해 `LONG` 또는 `SHORT`만 허용
-- 6개 슬롯 포트폴리오
+- 8개 슬롯 포트폴리오
   - Passive: `CLUSDT`, `XAUUSDT`, `QQQUSDT`, `BTCUSDT`
-  - Active 1: 통합 1주 추세 품질 점수가 가장 높은 crypto USDT-M perpetual
-  - Active 2: 같은 1주 추세 품질 공식으로 평가한 최고점 TradFi USDT-M perpetual
+  - Active 1, 3: 168개 종가 range volatility가 가장 큰 crypto USDT-M perpetual
+  - Active 2, 4: 168개 종가 range volatility가 가장 큰 TradFi USDT-M perpetual
 - 자산 배분
   - Passive 각 12.5%
-  - Active 각 25%
-  - 기본 총 투입률 99%, passive 2x / active 1x 레버리지
+  - Active 각 12.5%
+  - 기본 총 투입률 99%, passive 2x / active 2x 레버리지
 - 리스크 관리
   - 각 포지션 진입가 기준 4% stop loss 동기화
   - 마지막 LLM 판단 기준가에서 ±1% 이동 시 재판단
@@ -36,7 +36,7 @@ This project runs a six-slot portfolio loop across four fixed 2x-leverage passiv
 
 ### 실제 구동해도 되나?
 
-기술적으로는 live-data dry-run에서 전체 6슬롯 사이클, DeepSeek 판단, Telegram 전송, active screener, 주문 수량 계산까지 확인했습니다. 다만 실제 구동 전에는 아래 체크리스트를 반드시 확인하세요.
+실제 구동 전에는 전체 8슬롯 사이클, DeepSeek 판단, Telegram 전송, active screener, 주문 수량 계산까지 live-data dry-run으로 다시 확인하세요. 다만 실제 구동 전에는 아래 체크리스트를 반드시 확인하세요.
 
 - Binance 계좌를 자동화 전용으로 분리했는지 확인
 - 기존 수동 포지션이 있어도 자동 청산되어도 괜찮은 계좌인지 확인
@@ -52,9 +52,9 @@ LLM에는 한 번에 한 종목의 `symbol`, 현재 `reference_price`, 그리고
 
 ### Active 스크리닝
 
-Active 1과 Active 2는 같은 1주 추세 품질 공식으로 평가됩니다. 차이는 유니버스뿐입니다. Active 1은 crypto USDT-M perpetual, Active 2는 TradFi USDT-M perpetual을 대상으로 하며, passive 심볼과 이미 관리 중인 심볼은 제외합니다.
+Active 1과 Active 3은 crypto USDT-M perpetual을, Active 2와 Active 4는 TradFi USDT-M perpetual을 대상으로 합니다. passive 심볼과 이미 관리 중인 심볼은 제외하며, 앞선 active 슬롯이 선택한 심볼도 뒤 슬롯에서 제외됩니다.
 
-각 후보는 `ai_prompt_timeframe`의 `ai_prompt_candle_count`개 종가를 가져와 로그가격 선형 추세를 계산합니다. 1시간봉 기준 `weekly_consistency`와 `daily_consistency`는 데이터 길이에 맞춰 동적으로 분할되며, 기본 168개에서는 각각 1개 주간 구간과 7개 일간 구간을 사용합니다. 최종 점수는 `trend_strength`, `linearity`, `efficiency`, `directional_consistency`, `weekly_consistency`, `daily_consistency`, `adverse_score`, `trend_magnitude`의 유니버스 내부 percentile rank 가중합입니다.
+각 후보는 `ai_prompt_timeframe`의 `ai_prompt_candle_count`개 종가를 가져와 `abs(max(close)-min(close))/((max(close)+min(close))/2)`로 계산한 `close_range_volatility`가 큰 순서로 선정합니다. 기본값은 168개의 1시간봉 종가입니다. 랭킹 전에 Binance가 최신으로 반환한 2개의 1시간봉 high/low range를 검사하며, 둘 중 하나라도 4%를 넘으면 후보에서 제외합니다. 이 최신 2개에는 반드시 현재 진행 중인 1시간봉과 그 직전 1시간봉이 포함됩니다. 완전히 닫힌 봉 2개만 보는 방식이 아닙니다.
 
 ### 설치
 
@@ -94,7 +94,7 @@ deepseek_reasoning_effort: max
 deepseek_max_tokens: 8192
 deepseek_timeout_seconds: 300.0
 passive_leverage: 2
-active_leverage: 1
+active_leverage: 2
 capital_usage_ratio: 0.99
 rebalance_threshold_pct: 0.03
 stop_loss_pct: 0.04
@@ -103,8 +103,9 @@ passive_symbols:
   - XAUUSDT
   - QQQUSDT
   - BTCUSDT
-# Active candidates are ranked by the unified 1-week trend score using
-# ai_prompt_candle_count closes on ai_prompt_timeframe.
+# Active candidates are ranked by close_range_volatility over
+# ai_prompt_candle_count closes on ai_prompt_timeframe. The 4% filter uses the
+# latest returned 2 klines, intentionally including the current forming 1h candle.
 screener_quote: USDT
 screener_timeout: 30.0
 screener_retries: 3
@@ -202,7 +203,7 @@ python -m py_compile main.py src/ai/deepseek_trader.py src/strategy/portfolio_st
 │   │   └── telegram.py
 │   └── strategy/
 │       ├── active_screener.py      # crypto and TradFi active market screening
-│       ├── portfolio_strategy.py   # Six-slot portfolio state machine
+│       ├── portfolio_strategy.py   # Eight-slot portfolio state machine
 │       ├── runtime_config.py
 │       └── scheduler.py
 └── tests/
@@ -224,14 +225,14 @@ python -m py_compile main.py src/ai/deepseek_trader.py src/strategy/portfolio_st
   - Default model: `deepseek-v4-flash`
   - Reasoning effort: `max` (`xhigh` legacy values are normalized to `max`; `low`/`medium` map to `high`)
   - DeepSeek JSON Output is locally validated to accept only `LONG` or `SHORT`
-- Six-slot portfolio
+- Eight-slot portfolio
   - Passive: `CLUSDT`, `XAUUSDT`, `QQQUSDT`, `BTCUSDT`
-- Active 1: highest-scoring crypto USDT-M perpetual by unified 1-week trend quality
-- Active 2: highest-scoring TradFi USDT-M perpetual by the same 1-week trend quality formula
+- Active 1 and 3: crypto USDT-M perpetuals with the largest 168-close range volatility
+- Active 2 and 4: TradFi USDT-M perpetuals with the largest 168-close range volatility
 - Allocation
   - 12.5% per passive slot
-  - 25% per active slot
-  - 99% default capital usage, 2x passive leverage and 1x active leverage
+  - 12.5% per active slot
+  - 99% default capital usage, 2x passive leverage and 2x active leverage
 - Risk management
   - Native stop loss synchronized at 4% from entry price
   - Re-evaluates a slot after a ±1% move from the last LLM decision anchor
@@ -246,7 +247,7 @@ python -m py_compile main.py src/ai/deepseek_trader.py src/strategy/portfolio_st
 
 ### Can I Run It Live?
 
-The project has passed a full live-data dry run for all six slots, including DeepSeek decisions, Telegram delivery, active screening, and order quantity planning. Before running live, complete this checklist:
+Before running live, re-run the live-data dry run for the full eight-slot cycle, including DeepSeek decisions, Telegram delivery, active screening, and order quantity planning. Then complete this checklist:
 
 - Use a dedicated Binance Futures automation account
 - Confirm unmanaged/manual positions may be closed automatically
@@ -262,9 +263,9 @@ The LLM receives only one symbol at a time: `symbol`, live `reference_price`, an
 
 ### Active Screening
 
-Active 1 and Active 2 use the same one-week trend-quality formula. Only the universe differs. Active 1 screens crypto USDT-M perpetuals, Active 2 screens TradFi USDT-M perpetuals, and passive or already-managed symbols are excluded.
+Active 1 and Active 3 screen crypto USDT-M perpetuals. Active 2 and Active 4 screen TradFi USDT-M perpetuals. Passive symbols, already-managed symbols, and symbols selected by earlier active slots in the same cycle are excluded.
 
-For each candidate, the screener fetches `ai_prompt_candle_count` closes on `ai_prompt_timeframe` and fits a linear trend on log prices. For 1h candles, `weekly_consistency` and `daily_consistency` scale dynamically with the data length; the default 168 closes use one weekly segment and seven daily segments. The final score is a weighted sum of universe-local percentile ranks for `trend_strength`, `linearity`, `efficiency`, `directional_consistency`, `weekly_consistency`, `daily_consistency`, `adverse_score`, and `trend_magnitude`.
+For each candidate, the screener fetches `ai_prompt_candle_count` closes on `ai_prompt_timeframe` and ranks by `close_range_volatility = abs(max(close)-min(close))/((max(close)+min(close))/2)`, highest first. The default is 168 recent 1h closes. Before ranking, the screener checks the high/low range of the latest two 1h klines returned by Binance and excludes a candidate if either one exceeds 4%. These latest two klines intentionally include the currently forming 1h candle and the immediately preceding candle; the filter does not use only fully closed candles.
 
 ### Installation
 
@@ -304,7 +305,7 @@ deepseek_reasoning_effort: max
 deepseek_max_tokens: 8192
 deepseek_timeout_seconds: 300.0
 passive_leverage: 2
-active_leverage: 1
+active_leverage: 2
 capital_usage_ratio: 0.99
 rebalance_threshold_pct: 0.03
 stop_loss_pct: 0.04
@@ -313,8 +314,9 @@ passive_symbols:
   - XAUUSDT
   - QQQUSDT
   - BTCUSDT
-# Active candidates are ranked by the unified 1-week trend score using
-# ai_prompt_candle_count closes on ai_prompt_timeframe.
+# Active candidates are ranked by close_range_volatility over
+# ai_prompt_candle_count closes on ai_prompt_timeframe. The 4% filter uses the
+# latest returned 2 klines, intentionally including the current forming 1h candle.
 screener_quote: USDT
 screener_timeout: 30.0
 screener_retries: 3
@@ -412,7 +414,7 @@ python -m py_compile main.py src/ai/deepseek_trader.py src/strategy/portfolio_st
 │   │   └── telegram.py
 │   └── strategy/
 │       ├── active_screener.py      # crypto and TradFi active market screening
-│       ├── portfolio_strategy.py   # Six-slot portfolio state machine
+│       ├── portfolio_strategy.py   # Eight-slot portfolio state machine
 │       ├── runtime_config.py
 │       └── scheduler.py
 └── tests/

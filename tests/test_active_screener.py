@@ -3,13 +3,13 @@ import unittest
 
 from src.strategy.active_screener import (
     RECENT_KLINE_RANGE_CHANGE_LIMIT,
-    _build_trend_candidate,
-    calculate_trend_metrics,
+    _build_volatility_candidate,
+    calculate_close_range_volatility_metrics,
     build_usdt_perpetual_universe,
     build_usdt_tradfi_perpetual_universe,
     extract_kline_close_prices,
     extract_recent_kline_range_changes,
-    select_active_symbol_from_trend_candidates,
+    select_active_symbol_from_volatility_candidates,
     validate_recent_kline_range_filter,
 )
 
@@ -32,49 +32,44 @@ def _kline(index, *, close, high=None, low=None):
 
 
 class ActiveScreenerTests(unittest.TestCase):
-    def test_trend_metrics_identifies_orderly_long_trend(self):
-        metrics = calculate_trend_metrics("LONGUSDT", _trend_prices(rate=0.001, wiggle=0.001))
+    def test_close_range_volatility_metrics_uses_max_min_midpoint(self):
+        metrics = calculate_close_range_volatility_metrics("RANGEUSDT", [100.0, 110.0, 90.0, 105.0])
 
-        self.assertEqual(metrics["symbol"], "LONGUSDT")
-        self.assertEqual(metrics["trend_direction"], "LONG")
+        self.assertEqual(metrics["symbol"], "RANGEUSDT")
+        self.assertEqual(metrics["close_count"], 4)
+        self.assertEqual(metrics["min_close"], 90.0)
+        self.assertEqual(metrics["max_close"], 110.0)
+        self.assertEqual(metrics["close_range_midpoint"], 100.0)
+        self.assertAlmostEqual(metrics["close_range_volatility"], 0.2)
+        self.assertAlmostEqual(metrics["close_range_volatility_pct"], 20.0)
+        self.assertEqual(metrics["ranking_metric"], "close_range_volatility")
+
+    def test_close_range_volatility_metrics_allows_flat_paths(self):
+        metrics = calculate_close_range_volatility_metrics("FLATUSDT", [100.0] * 168)
+
         self.assertEqual(metrics["close_count"], 168)
-        self.assertGreater(metrics["linearity"], 0.99)
-        self.assertGreater(metrics["efficiency"], 0.95)
-        self.assertEqual(metrics["weekly_consistency"], 1.0)
-        self.assertEqual(metrics["weekly_consistency_segments"], 1)
-        self.assertEqual(metrics["daily_consistency_segments"], 7)
+        self.assertEqual(metrics["close_range_volatility"], 0.0)
 
-    def test_trend_metrics_identifies_orderly_short_trend(self):
-        metrics = calculate_trend_metrics("SHORTUSDT", _trend_prices(rate=-0.001, wiggle=0.001))
-
-        self.assertEqual(metrics["trend_direction"], "SHORT")
-        self.assertLess(metrics["net_return_pct"], 0.0)
-        self.assertGreater(metrics["directional_consistency"], 0.95)
-
-    def test_consistency_segments_scale_with_close_count(self):
-        metrics = calculate_trend_metrics("LONGUSDT", _trend_prices(rate=0.001, count=168 * 4, wiggle=0.001))
-
-        self.assertEqual(metrics["weekly_consistency_segments"], 4)
-        self.assertEqual(metrics["daily_consistency_segments"], 28)
-
-    def test_selects_highest_quality_one_week_trend_after_exclusions(self):
+    def test_selects_highest_close_range_volatility_after_exclusions(self):
         candidates = [
-            calculate_trend_metrics("CHOPPYUSDT", _trend_prices(rate=0.0014, wiggle=0.18)),
-            calculate_trend_metrics("ORDERLYUSDT", _trend_prices(rate=0.0010, wiggle=0.001)),
-            calculate_trend_metrics("EXCLUDEDUSDT", _trend_prices(rate=0.0015, wiggle=0.0)),
+            calculate_close_range_volatility_metrics("LOWVOLUSDT", [100.0] * 167 + [102.0]),
+            calculate_close_range_volatility_metrics("HIGHVOLUSDT", [100.0] * 167 + [130.0]),
+            calculate_close_range_volatility_metrics("EXCLUDEDUSDT", [100.0] * 167 + [200.0]),
         ]
 
-        selection = select_active_symbol_from_trend_candidates(
+        selection = select_active_symbol_from_volatility_candidates(
             candidates,
             excluded_symbols=["EXCLUDEDUSDT"],
         )
 
-        self.assertEqual(selection["symbol"], "ORDERLYUSDT")
+        self.assertEqual(selection["symbol"], "HIGHVOLUSDT")
+        self.assertEqual(selection["ranking_metric"], "close_range_volatility")
         self.assertNotIn("EXCLUDEDUSDT", [row["symbol"] for row in selection["top_candidates"]])
         self.assertGreater(
-            selection["selected"]["trend_score"],
-            next(row["trend_score"] for row in selection["top_candidates"] if row["symbol"] == "CHOPPYUSDT"),
+            selection["selected"]["close_range_volatility"],
+            next(row["close_range_volatility"] for row in selection["top_candidates"] if row["symbol"] == "LOWVOLUSDT"),
         )
+        self.assertNotIn("trend_score", selection["selected"])
 
     def test_extract_kline_close_prices_requires_enough_positive_closes(self):
         closes = extract_kline_close_prices(_klines_from_closes([1.0, 1.1, 1.2]), required_count=2)
@@ -100,7 +95,7 @@ class ActiveScreenerTests(unittest.TestCase):
         self.assertAlmostEqual(changes[1], 2.0 / 103.0)
         self.assertLess(result["recent_kline_range_max_change"], RECENT_KLINE_RANGE_CHANGE_LIMIT)
 
-    def test_build_trend_candidate_rejects_current_or_previous_kline_above_four_percent(self):
+    def test_build_volatility_candidate_rejects_current_forming_or_previous_kline_above_four_percent(self):
         for index in (-2, -1):
             with self.subTest(index=index):
                 klines = _klines_from_closes(_trend_prices(rate=0.001))
@@ -108,16 +103,17 @@ class ActiveScreenerTests(unittest.TestCase):
                 klines[index][3] = "100"
 
                 with self.assertRaisesRegex(ValueError, "range change above limit"):
-                    _build_trend_candidate("VOLATILEUSDT", klines, required_count=168)
+                    _build_volatility_candidate("VOLATILEUSDT", klines, required_count=168)
 
-    def test_build_trend_candidate_keeps_recent_range_metadata_when_filter_passes(self):
-        candidate = _build_trend_candidate(
+    def test_build_volatility_candidate_keeps_recent_range_metadata_when_filter_passes(self):
+        candidate = _build_volatility_candidate(
             "ORDERLYUSDT",
             _klines_from_closes(_trend_prices(rate=0.001)),
             required_count=168,
         )
 
         self.assertEqual(candidate["symbol"], "ORDERLYUSDT")
+        self.assertIn("close_range_volatility", candidate)
         self.assertEqual(candidate["recent_kline_range_changes"], [0.0, 0.0])
         self.assertEqual(candidate["recent_kline_range_change_limit"], RECENT_KLINE_RANGE_CHANGE_LIMIT)
 
