@@ -7,14 +7,14 @@ from src.strategy import portfolio_strategy
 class PortfolioHelperTests(unittest.TestCase):
     def test_default_config_builds_eight_slots_in_priority_order(self):
         config = {
-            "passive_symbols": ["CLUSDT", "COPPERUSDT", "QQQUSDT", "BTCUSDT"],
+            "passive_symbols": ["CLUSDT", "XAUUSDT", "QQQUSDT", "BTCUSDT"],
         }
 
         slots = portfolio_strategy._build_portfolio_slots(config)
 
         self.assertEqual([slot.slot_id for slot in slots], [
             "passive_cl",
-            "passive_copper",
+            "passive_xau",
             "passive_qqq",
             "passive_btc",
             "active_1",
@@ -22,11 +22,11 @@ class PortfolioHelperTests(unittest.TestCase):
             "active_3",
             "active_4",
         ])
-        self.assertEqual([slot.symbol for slot in slots[:4]], ["CLUSDT", "COPPERUSDT", "QQQUSDT", "BTCUSDT"])
+        self.assertEqual([slot.symbol for slot in slots[:4]], ["CLUSDT", "XAUUSDT", "QQQUSDT", "BTCUSDT"])
         self.assertEqual([slot.target_margin_ratio for slot in slots], [0.125] * 8)
         self.assertEqual(slots[4].active_screening_mode, "crypto")
         self.assertEqual(slots[5].active_screening_mode, "tradfi")
-        self.assertEqual(slots[6].active_screening_mode, "crypto")
+        self.assertEqual(slots[6].active_screening_mode, "tradfi")
         self.assertEqual(slots[7].active_screening_mode, "tradfi")
 
     def test_deepseek_reasoning_effort_normalization_matches_api_values(self):
@@ -295,7 +295,7 @@ class PortfolioHelperTests(unittest.TestCase):
 
     def test_duplicate_active_state_symbol_is_cleared_for_later_slot(self):
         config = {
-            "passive_symbols": ["CLUSDT", "COPPERUSDT", "QQQUSDT", "BTCUSDT"],
+            "passive_symbols": ["CLUSDT", "XAUUSDT", "QQQUSDT", "BTCUSDT"],
         }
         slots = portfolio_strategy._build_portfolio_slots(config)
         state = portfolio_strategy._normalize_portfolio_state(
@@ -314,7 +314,7 @@ class PortfolioHelperTests(unittest.TestCase):
 
     def test_active_recent_symbols_are_grouped_by_screening_universe(self):
         config = {
-            "passive_symbols": ["CLUSDT", "COPPERUSDT", "QQQUSDT", "BTCUSDT"],
+            "passive_symbols": ["CLUSDT", "XAUUSDT", "QQQUSDT", "BTCUSDT"],
         }
         slots = portfolio_strategy._build_portfolio_slots(config)
         state = portfolio_strategy._normalize_portfolio_state(
@@ -323,8 +323,8 @@ class PortfolioHelperTests(unittest.TestCase):
                 "slots": {
                     "active_1": {"symbol": "ETHUSDT", "previous_active_symbol": "SOLUSDT"},
                     "active_2": {"symbol": "ESUSDT", "previous_active_symbol": "NQUSDT"},
-                    "active_3": {"symbol": "BNBUSDT"},
-                    "active_4": {"previous_active_symbol": "GCUSDT"},
+                    "active_3": {"symbol": "GCUSDT"},
+                    "active_4": {"previous_active_symbol": "YMUSDT"},
                 },
             },
             slots,
@@ -332,8 +332,33 @@ class PortfolioHelperTests(unittest.TestCase):
 
         grouped = portfolio_strategy._active_recent_symbols_by_mode(slots, state)
 
-        self.assertEqual(grouped["crypto"], {"ETHUSDT", "SOLUSDT", "BNBUSDT"})
-        self.assertEqual(grouped["tradfi"], {"ESUSDT", "NQUSDT", "GCUSDT"})
+        self.assertEqual(grouped["crypto"], {"ETHUSDT", "SOLUSDT"})
+        self.assertEqual(grouped["tradfi"], {"ESUSDT", "NQUSDT", "GCUSDT", "YMUSDT"})
+
+    def test_legacy_active3_crypto_state_is_marked_for_tradfi_migration(self):
+        config = {
+            "passive_symbols": ["CLUSDT", "XAUUSDT", "QQQUSDT", "BTCUSDT"],
+        }
+        slots = portfolio_strategy._build_portfolio_slots(config)
+        state = portfolio_strategy._normalize_portfolio_state(
+            {
+                "version": portfolio_strategy.STATE_VERSION,
+                "slots": {
+                    "active_3": {
+                        "symbol": "BNBUSDT",
+                        "last_ai_decision": "LONG",
+                        "entered_at": "1970-01-01T00:00:00Z",
+                        "last_active_rank_checked_at": "1970-01-01T00:00:00Z",
+                    },
+                },
+            },
+            slots,
+        )
+
+        active3_state = state["slots"]["active_3"]
+        self.assertEqual(active3_state["active_screening_mode"], "tradfi")
+        self.assertTrue(active3_state["active_screening_mode_changed"])
+        self.assertEqual(active3_state["previous_active_screening_mode"], "crypto")
 
 
 if __name__ == "__main__":

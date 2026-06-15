@@ -32,20 +32,20 @@ active_rescreen_interval_hours: 24
 # Passive slots are evaluated in this exact priority order.
 passive_symbols:
   - CLUSDT
-  - COPPERUSDT
+  - XAUUSDT
   - QQQUSDT
   - BTCUSDT
 
-# active1 and active3 screen crypto USDT perpetuals.
-# active2 and active4 screen TradFi USDT perpetuals.
+# active1 screens crypto USDT perpetuals.
+# active2, active3, and active4 screen TradFi USDT perpetuals.
 # Active candidates are ranked by close_range_volatility:
 # abs(last_close-first_close)/((last_close+first_close)/2), using
 # ai_prompt_candle_count closes on ai_prompt_timeframe.
 # Active direction is LONG when last_close > first_close and SHORT when
 # last_close < first_close. Flat candidates are skipped.
 # When a slot needs a new active symbol, it excludes current and immediately
-# previous symbols from the same active universe: active1/active3 for crypto,
-# active2/active4 for TradFi.
+# previous symbols from the same active universe: active1 for crypto,
+# active2/active3/active4 for TradFi.
 # Once an active position is open, it is held until the fixed 4% stop loss,
 # external/manual position cleanup, or the 24h rank review finds another top
 # symbol in the same active universe. Active slots do not use the 1% decision

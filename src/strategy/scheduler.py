@@ -40,6 +40,7 @@ TRIGGER_REASON_LABELS = {
     "waiting_for_next_price_trigger": "Waiting for next price level",
     "active_candidate_selected": "Active candidate selected",
     "active_rank_review_due": "Active 24h rank review due",
+    "active_screening_mode_changed": "Active screening mode changed",
 }
 
 ACTION_LABELS = {

@@ -132,7 +132,7 @@ class ActiveScreenerTests(unittest.TestCase):
             "symbols": [
                 {"symbol": "BTCUSDT", "contractType": "PERPETUAL", "status": "TRADING", "quoteAsset": "USDT"},
                 {
-                    "symbol": "COPPERUSDT",
+                    "symbol": "XAUUSDT",
                     "contractType": "PERPETUAL",
                     "status": "TRADING",
                     "quoteAsset": "USDT",
@@ -150,7 +150,7 @@ class ActiveScreenerTests(unittest.TestCase):
         exchange_info = {
             "symbols": [
                 {
-                    "symbol": "COPPERUSDT",
+                    "symbol": "XAUUSDT",
                     "contractType": "TRADIFI_PERPETUAL",
                     "status": "TRADING",
                     "quoteAsset": "USDT",
@@ -180,7 +180,7 @@ class ActiveScreenerTests(unittest.TestCase):
             ]
         }
 
-        self.assertEqual(build_usdt_tradfi_perpetual_universe(exchange_info), {"QQQUSDT", "COPPERUSDT"})
+        self.assertEqual(build_usdt_tradfi_perpetual_universe(exchange_info), {"QQQUSDT", "XAUUSDT"})
 
 
 if __name__ == "__main__":

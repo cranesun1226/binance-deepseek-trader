@@ -60,6 +60,13 @@ MAX_DB_CYCLE_DIRS = 20
 STATE_VERSION = "1.0.0"
 TRIGGER_PRICE_DIGITS = 8
 MANAGED_DECISIONS = {"LONG", "SHORT"}
+ACTIVE_SCREENING_MODES = {"crypto", "tradfi"}
+LEGACY_ACTIVE_SCREENING_MODES_BY_SLOT_ID = {
+    "active_1": "crypto",
+    "active_2": "tradfi",
+    "active_3": "crypto",
+    "active_4": "tradfi",
+}
 MATERIAL_POSITION_RECORD_ACTIONS = {
     "active_rank_review_failed_position_kept",
     "active_rank_switch_entry_failed",
@@ -242,7 +249,7 @@ def _load_strategy_config() -> Dict[str, Any]:
 
 def _build_portfolio_slots(config: Dict[str, Any]) -> list[PortfolioSlot]:
     passive_symbols = list(config["passive_symbols"])
-    passive_labels = ["passive_cl", "passive_copper", "passive_qqq", "passive_btc"]
+    passive_labels = ["passive_cl", "passive_xau", "passive_qqq", "passive_btc"]
     slots = [
         PortfolioSlot(
             slot_id=slot_id,
@@ -274,7 +281,7 @@ def _build_portfolio_slots(config: Dict[str, Any]) -> list[PortfolioSlot]:
                 label="active3",
                 kind="active",
                 target_margin_ratio=0.125,
-                active_screening_mode="crypto",
+                active_screening_mode="tradfi",
             ),
             PortfolioSlot(
                 slot_id="active_4",
@@ -347,6 +354,11 @@ def _format_price(value: Any) -> Optional[float]:
 def _normalize_ai_decision(value: Any) -> Optional[str]:
     normalized = str(value or "").strip().upper()
     return normalized if normalized in MANAGED_DECISIONS else None
+
+
+def _normalize_active_screening_mode_value(value: Any) -> Optional[str]:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in ACTIVE_SCREENING_MODES else None
 
 
 def _decision_to_position_direction(value: Any) -> Optional[str]:
@@ -615,6 +627,9 @@ def _empty_slot_state(slot: PortfolioSlot) -> Dict[str, Any]:
         "next_trigger_up": None,
     }
     if slot.kind == "active":
+        state["active_screening_mode"] = _active_screening_mode(slot)
+        state["active_screening_mode_changed"] = False
+        state["previous_active_screening_mode"] = None
         state["entered_at"] = None
         state["last_active_rank_checked_at"] = None
         state["previous_active_symbol"] = None
@@ -622,11 +637,43 @@ def _empty_slot_state(slot: PortfolioSlot) -> Dict[str, Any]:
 
 
 def _active_screening_mode(slot: PortfolioSlot) -> str:
-    return "tradfi" if str(slot.active_screening_mode or "").strip().lower() == "tradfi" else "crypto"
+    return _normalize_active_screening_mode_value(slot.active_screening_mode) or "crypto"
+
+
+def _legacy_active_screening_mode(slot: PortfolioSlot) -> str:
+    return LEGACY_ACTIVE_SCREENING_MODES_BY_SLOT_ID.get(slot.slot_id, _active_screening_mode(slot))
+
+
+def _active_screening_mode_changed(slot: PortfolioSlot, slot_state: Dict[str, Any]) -> bool:
+    if slot.kind != "active":
+        return False
+    persisted_mode = _normalize_active_screening_mode_value(slot_state.get("active_screening_mode"))
+    if persisted_mode is None and (
+        _normalize_symbol(slot_state.get("symbol"))
+        or _normalize_symbol(slot_state.get("previous_active_symbol"))
+        or str(slot_state.get("entered_at") or "").strip()
+        or _normalize_ai_decision(slot_state.get("last_ai_decision"))
+    ):
+        persisted_mode = _legacy_active_screening_mode(slot)
+    if persisted_mode and persisted_mode != _active_screening_mode(slot):
+        return True
+    return bool(slot_state.get("active_screening_mode_changed"))
+
+
+def _mark_active_screening_mode_current(slot: PortfolioSlot, slot_state: Dict[str, Any]) -> Dict[str, Any]:
+    updated = dict(slot_state)
+    if slot.kind == "active":
+        updated["active_screening_mode"] = _active_screening_mode(slot)
+        updated["active_screening_mode_changed"] = False
+        updated["previous_active_screening_mode"] = None
+    return updated
 
 
 def _normalize_slot_state(slot: PortfolioSlot, raw_state: Any) -> Dict[str, Any]:
     state = _empty_slot_state(slot)
+    configured_active_mode = _active_screening_mode(slot) if slot.kind == "active" else None
+    previous_active_mode = None
+    active_mode_changed = False
     if isinstance(raw_state, dict):
         preserved_keys = [
             "last_ai_trigger_price",
@@ -636,6 +683,13 @@ def _normalize_slot_state(slot: PortfolioSlot, raw_state: Any) -> Dict[str, Any]
             "next_trigger_up",
         ]
         if slot.kind == "active":
+            persisted_mode = _normalize_active_screening_mode_value(raw_state.get("active_screening_mode"))
+            raw_previous_mode = _normalize_active_screening_mode_value(raw_state.get("previous_active_screening_mode"))
+            previous_active_mode = persisted_mode or raw_previous_mode or _legacy_active_screening_mode(slot)
+            active_mode_changed = bool(
+                raw_state.get("active_screening_mode_changed")
+                or (previous_active_mode is not None and previous_active_mode != configured_active_mode)
+            )
             preserved_keys.extend(["entered_at", "last_active_rank_checked_at"])
         for key in preserved_keys:
             if key in raw_state:
@@ -644,6 +698,11 @@ def _normalize_slot_state(slot: PortfolioSlot, raw_state: Any) -> Dict[str, Any]
             state["symbol"] = _normalize_symbol(raw_state.get("symbol"))
             state["previous_active_symbol"] = _normalize_symbol(
                 raw_state.get("previous_active_symbol")
+            )
+            state["active_screening_mode"] = configured_active_mode
+            state["active_screening_mode_changed"] = active_mode_changed
+            state["previous_active_screening_mode"] = (
+                (raw_previous_mode or previous_active_mode) if active_mode_changed else None
             )
     if slot.kind == "passive":
         state["symbol"] = slot.symbol
@@ -1931,6 +1990,11 @@ def _run_active_slot(
     )
     result["target_notional_usdt"] = target_notional
     candidate: Optional[Dict[str, Any]] = None
+    active_mode_changed = _active_screening_mode_changed(slot, slot_state)
+    if active_mode_changed:
+        result["active_screening_mode_changed"] = True
+        result["previous_active_screening_mode"] = slot_state.get("previous_active_screening_mode")
+        result["active_screening_mode"] = _active_screening_mode(slot)
 
     if isinstance(position, dict) and current_symbol:
         leverage_sync = _ensure_symbol_leverage(
@@ -1956,7 +2020,9 @@ def _run_active_slot(
         result["entered_at"] = tracked_state.get("entered_at")
         result["last_active_rank_checked_at"] = tracked_state.get("last_active_rank_checked_at")
 
-        if backfilled_entry_time or not _active_rank_review_due(tracked_state, config=config, as_of_ms=as_of_ms):
+        if not active_mode_changed and (
+            backfilled_entry_time or not _active_rank_review_due(tracked_state, config=config, as_of_ms=as_of_ms)
+        ):
             stop_sync = _sync_fixed_stop_loss(
                 api_key=api_key,
                 api_secret=api_secret,
@@ -1974,7 +2040,7 @@ def _run_active_slot(
 
         trigger_info = {
             "should_trigger": True,
-            "reason": "active_rank_review_due",
+            "reason": "active_screening_mode_changed" if active_mode_changed else "active_rank_review_due",
             "trigger_price": _normalize_trigger_price(reference_price),
             "next_trigger_down": None,
             "next_trigger_up": None,
@@ -2075,7 +2141,10 @@ def _run_active_slot(
             result["stop_sync"] = stop_sync
             result["success"] = bool(stop_sync.get("success"))
             result["action"] = "active_rank_review_position_kept" if result["success"] else "stop_loss_sync_failed"
-            updated_state = _mark_active_rank_checked(tracked_state, as_of_ms=as_of_ms)
+            updated_state = _mark_active_screening_mode_current(
+                slot,
+                _mark_active_rank_checked(tracked_state, as_of_ms=as_of_ms),
+            )
             updated_state["symbol"] = current_symbol
             result["last_active_rank_checked_at"] = updated_state.get("last_active_rank_checked_at")
             _emit_active_screening_after(
@@ -2189,13 +2258,16 @@ def _run_active_slot(
         if entry_opened and bool(execution.get("success")):
             result["success"] = True
             result["action"] = "switched_active_position_by_rank"
-            updated_state = _update_slot_trigger_state(
-                _mark_active_entry_opened(_clear_active_slot_state(tracked_state), as_of_ms=as_of_ms),
-                ai_triggered=False,
-                trigger_info=trigger_info,
-                ai_decision=decision,
-                symbol=candidate_symbol,
-                update_anchor=True,
+            updated_state = _mark_active_screening_mode_current(
+                slot,
+                _update_slot_trigger_state(
+                    _mark_active_entry_opened(_clear_active_slot_state(tracked_state), as_of_ms=as_of_ms),
+                    ai_triggered=False,
+                    trigger_info=trigger_info,
+                    ai_decision=decision,
+                    symbol=candidate_symbol,
+                    update_anchor=True,
+                ),
             )
             reserved_symbol = candidate_symbol
         else:
@@ -2204,7 +2276,7 @@ def _run_active_slot(
                 execution["action"] = "active_rank_switch_entry_failed"
             result["success"] = False
             result["action"] = "active_rank_switch_entry_failed"
-            updated_state = _clear_active_slot_state(tracked_state)
+            updated_state = _mark_active_screening_mode_current(slot, _clear_active_slot_state(tracked_state))
             reserved_symbol = None
         result["last_active_rank_checked_at"] = updated_state.get("last_active_rank_checked_at")
         result["entered_at"] = updated_state.get("entered_at")
@@ -2311,13 +2383,16 @@ def _run_active_slot(
     base_active_state = _clear_active_slot_state(slot_state)
     if opened_active_position:
         base_active_state = _mark_active_entry_opened(base_active_state, as_of_ms=as_of_ms)
-    updated_state = _update_slot_trigger_state(
-        base_active_state,
-        ai_triggered=False,
-        trigger_info=trigger_info,
-        ai_decision=decision,
-        symbol=candidate_symbol if opened_active_position else None,
-        update_anchor=True,
+    updated_state = _mark_active_screening_mode_current(
+        slot,
+        _update_slot_trigger_state(
+            base_active_state,
+            ai_triggered=False,
+            trigger_info=trigger_info,
+            ai_decision=decision,
+            symbol=candidate_symbol if opened_active_position else None,
+            update_anchor=True,
+        ),
     )
     result["entered_at"] = updated_state.get("entered_at")
     result["last_active_rank_checked_at"] = updated_state.get("last_active_rank_checked_at")

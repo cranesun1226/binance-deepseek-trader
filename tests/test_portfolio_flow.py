@@ -23,7 +23,7 @@ def _config():
         "deepseek_reasoning_effort": "max",
         "deepseek_max_tokens": 8192,
         "deepseek_timeout_seconds": 300.0,
-        "passive_symbols": ["CLUSDT", "COPPERUSDT", "QQQUSDT", "BTCUSDT"],
+        "passive_symbols": ["CLUSDT", "XAUUSDT", "QQQUSDT", "BTCUSDT"],
         "screener_quote": "USDT",
         "screener_timeout": 30.0,
         "screener_retries": 3,
@@ -44,6 +44,16 @@ def _active2_slot():
     return portfolio_strategy.PortfolioSlot(
         slot_id="active_2",
         label="active2",
+        kind="active",
+        target_margin_ratio=0.125,
+        active_screening_mode="tradfi",
+    )
+
+
+def _active3_slot():
+    return portfolio_strategy.PortfolioSlot(
+        slot_id="active_3",
+        label="active3",
         kind="active",
         target_margin_ratio=0.125,
         active_screening_mode="tradfi",
@@ -140,6 +150,30 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertEqual(mocked_tradfi.call_args.kwargs["quote"], "USDT")
         self.assertEqual(mocked_tradfi.call_args.kwargs["required_kline_interval"], "1h")
         self.assertEqual(mocked_tradfi.call_args.kwargs["required_kline_count"], 168)
+
+    def test_active3_candidate_screening_uses_tradfi_screener(self):
+        with patch(
+            "src.strategy.portfolio_strategy.screen_active_tradfi_symbol",
+            return_value={
+                "metadata": {"screening_mode": "tradfi"},
+                "selection": {
+                    "symbol": "GCUSDT",
+                    "screening_decision": "LONG",
+                    "screening_direction": "up",
+                    "selected": {"symbol": "GCUSDT", "screening_decision": "LONG", "screening_direction": "up"},
+                },
+            },
+        ) as mocked_tradfi, patch("src.strategy.portfolio_strategy.screen_active_symbol") as mocked_crypto:
+            candidate = portfolio_strategy._screen_active_candidate(
+                slot=_active3_slot(),
+                config=_config(),
+                excluded_symbols=["CLUSDT"],
+            )
+
+        self.assertEqual(candidate["symbol"], "GCUSDT")
+        self.assertEqual(candidate["screening_decision"], "LONG")
+        mocked_tradfi.assert_called_once()
+        mocked_crypto.assert_not_called()
 
     def test_prompt_market_context_fetches_padding_and_serializes_requested_count(self):
         raw_klines = [[index, "0", "0", "0", str(float(index + 1))] for index in range(170)]
@@ -811,6 +845,80 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertEqual(mocked_place.call_args.kwargs["symbol"], "SOLUSDT")
         self.assertEqual(mocked_place.call_args.kwargs["decision"], "SHORT")
         self.assertEqual([event_name for event_name, _ in notifications], ["active_screening_after"])
+
+    def test_active_mode_change_triggers_immediate_tradfi_rank_review(self):
+        slot = _active3_slot()
+        slot_state = {
+            "slot_id": "active_3",
+            "kind": "active",
+            "symbol": "BNBUSDT",
+            "last_ai_decision": "LONG",
+            "entered_at": "1970-01-01T00:00:00Z",
+            "last_active_rank_checked_at": "1970-01-01T00:00:00Z",
+            "active_screening_mode": "tradfi",
+            "active_screening_mode_changed": True,
+            "previous_active_screening_mode": "crypto",
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "src.strategy.portfolio_strategy._reference_price",
+            side_effect=[101.0, 2100.0],
+        ), patch(
+            "src.strategy.portfolio_strategy._screen_active_candidate",
+            return_value={
+                "symbol": "GCUSDT",
+                "screening_decision": "LONG",
+                "screening_direction": "up",
+                "close_prices": [2000.0, 2050.0, 2100.0],
+                "decision_source": "active_screener",
+                "selection": {"symbol": "GCUSDT", "selected": {"symbol": "GCUSDT"}},
+                "metadata": {"screening_mode": "tradfi"},
+                "_screener_output": {"metadata": {"screening_mode": "tradfi"}, "selection": {"symbol": "GCUSDT"}},
+            },
+        ) as mocked_screen, patch(
+            "src.strategy.portfolio_strategy._close_existing_position",
+            return_value={"success": True, "action": "closed_position", "symbol": "BNBUSDT"},
+        ) as mocked_close, patch(
+            "src.strategy.portfolio_strategy.get_account_overview",
+            return_value={"equity": 1000.0, "available_balance": 500.0},
+        ), patch(
+            "src.strategy.portfolio_strategy._place_direction_position",
+            return_value={"success": True, "action": "opened_new_position", "position": {"symbol": "GCUSDT"}},
+        ) as mocked_place, patch(
+            "src.strategy.portfolio_strategy._sync_position_after_trade",
+            return_value={"position": {"symbol": "GCUSDT"}, "stop_sync": {"success": True}},
+        ):
+            result, updated_state, active_symbol = portfolio_strategy._run_active_slot(
+                slot=slot,
+                slot_state=slot_state,
+                config=_config(),
+                api_key="key",
+                api_secret="secret",
+                account_overview={"equity": 1000.0, "available_balance": 500.0},
+                open_positions=[_long_position("BNBUSDT")],
+                reserved_symbols={"CLUSDT"},
+                as_of_ms=1,
+                cycle_dir_factory=lambda: temp_dir,
+                notification_callback=None,
+            )
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["screening_triggered"])
+        self.assertEqual(result["trigger_reason"], "active_screening_mode_changed")
+        self.assertEqual(result["action"], "switched_active_position_by_rank")
+        self.assertEqual(result["previous_symbol"], "BNBUSDT")
+        self.assertEqual(result["candidate_symbol"], "GCUSDT")
+        self.assertEqual(active_symbol, "GCUSDT")
+        self.assertEqual(updated_state["symbol"], "GCUSDT")
+        self.assertEqual(updated_state["active_screening_mode"], "tradfi")
+        self.assertFalse(updated_state["active_screening_mode_changed"])
+        self.assertIsNone(updated_state["previous_active_screening_mode"])
+        mocked_screen.assert_called_once()
+        self.assertEqual(mocked_screen.call_args.kwargs["slot"].active_screening_mode, "tradfi")
+        mocked_close.assert_called_once()
+        mocked_place.assert_called_once()
+        self.assertEqual(mocked_place.call_args.kwargs["symbol"], "GCUSDT")
+        self.assertEqual(mocked_place.call_args.kwargs["decision"], "LONG")
 
     def test_active_existing_position_does_not_close_or_switch_on_price_trigger(self):
         slot = _active_slot()
