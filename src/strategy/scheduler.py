@@ -50,9 +50,13 @@ ACTION_LABELS = {
     "kept_position_by_ai": "Position kept by AI",
     "kept_position_by_screening": "Position kept by screening",
     "kept_active_position_until_stop_loss": "Active position held until stop-loss",
+    "active_rebalance_review_failed_position_kept": "Active rebalance review failed, position kept",
+    "active_rebalance_selection_failed_position_kept": "Active rebalance selection failed, position kept",
+    "active_rebalance_position_kept": "Active position kept by DeepSeek rebalance",
     "active_rank_review_failed_position_kept": "Active rank review failed, position kept",
     "active_rank_review_position_kept": "Active position kept by rank",
     "opened_new_position": "Opened new position",
+    "switched_active_position_by_rebalancer": "Switched active position by DeepSeek rebalance",
     "switched_active_position_by_rank": "Switched active position by rank",
     "reversed_position": "Reversed position",
     "increased_position": "Increased position",
@@ -358,6 +362,19 @@ class TradingScheduler:
         selected = selection.get("selected") if isinstance(selection.get("selected"), dict) else {}
         execution = payload.get("execution") if isinstance(payload.get("execution"), dict) else {}
         close_result = payload.get("close") if isinstance(payload.get("close"), dict) else {}
+        rebalance_analysis = (
+            payload.get("active_rebalance_analysis")
+            if isinstance(payload.get("active_rebalance_analysis"), dict)
+            else {}
+        )
+        rebalance_decision = (
+            payload.get("active_rebalance_selection")
+            if isinstance(payload.get("active_rebalance_selection"), dict)
+            else rebalance_analysis.get("decision")
+            if isinstance(rebalance_analysis.get("decision"), dict)
+            else {}
+        )
+        rebalance_reason = self._decision_reason_text(rebalance_analysis)
         sections: list[tuple[str, Sequence[str], bool]] = [
             (
                 self._format_html_title("Screening"),
@@ -376,6 +393,26 @@ class TradingScheduler:
                     self._format_html_line("Net Return", self._format_float(selected.get("net_return_pct"), 2) + "%"),
                 ],
                 True,
+            ),
+            (
+                self._format_html_title("Rebalancer"),
+                [
+                    self._format_html_line("Selected", payload.get("selected_symbol"), code=True)
+                    if payload.get("selected_symbol")
+                    else "",
+                    self._format_html_line("Reason", rebalance_reason) if rebalance_reason else "",
+                    self._format_html_line("Model", rebalance_analysis.get("model"), code=True)
+                    if rebalance_analysis
+                    else "",
+                    self._format_html_line(
+                        "Raw Selected",
+                        rebalance_decision.get("selected_symbol") if isinstance(rebalance_decision, dict) else None,
+                        code=True,
+                    )
+                    if isinstance(rebalance_decision, dict) and rebalance_decision.get("selected_symbol")
+                    else "",
+                ],
+                False,
             ),
             (
                 self._format_html_title("Execution"),

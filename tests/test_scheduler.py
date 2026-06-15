@@ -8,7 +8,7 @@ from src.strategy.portfolio_strategy import STATE_VERSION
 
 class SchedulerTests(unittest.TestCase):
     def test_run_cycle_once_uses_portfolio_cycle_and_persists_state(self):
-        state_update = {"version": STATE_VERSION, "slots": {"active_1": {"symbol": "ETHUSDT"}}}
+        state_update = {"version": STATE_VERSION, "slots": {"active_1": {"symbol": "ESUSDT"}}}
         with patch.object(TradingScheduler, "load_state", return_value={"version": STATE_VERSION, "slots": {}}), patch.object(
             TradingScheduler, "save_state"
         ) as mocked_save, patch(
@@ -25,7 +25,7 @@ class SchedulerTests(unittest.TestCase):
             result = scheduler.run_cycle_once(datetime(2026, 6, 3, tzinfo=timezone.utc))
 
         self.assertTrue(result["success"])
-        self.assertEqual(scheduler.state["slots"]["active_1"]["symbol"], "ETHUSDT")
+        self.assertEqual(scheduler.state["slots"]["active_1"]["symbol"], "ESUSDT")
         mocked_run.assert_called_once()
         mocked_save.assert_called_once()
 
@@ -80,7 +80,7 @@ class SchedulerTests(unittest.TestCase):
         payload = {
             "slot_id": "active_1",
             "slot_label": "active1",
-            "symbol": "SOLUSDT",
+            "symbol": "NQUSDT",
             "current_price": 55.0,
             "trigger_reason": "active_candidate_selected",
             "screening_decision": "LONG",
@@ -89,9 +89,9 @@ class SchedulerTests(unittest.TestCase):
             "action": "opened_new_position",
             "success": True,
             "execution": {"action": "opened_new_position", "side": "Buy", "qty": "3"},
-            "position": {"symbol": "SOLUSDT", "direction": "long", "size": 3, "entry_price": 55.0},
+            "position": {"symbol": "NQUSDT", "direction": "long", "size": 3, "entry_price": 55.0},
             "screener": {
-                "metadata": {"screening_mode": "crypto"},
+                "metadata": {"screening_mode": "tradfi"},
                 "selection": {
                     "ranking_metric": "close_range_volatility",
                     "selected": {
@@ -112,7 +112,7 @@ class SchedulerTests(unittest.TestCase):
 
         mocked_text.assert_called_once()
         self.assertIn("Active Screening Decision", mocked_text.call_args.args[0])
-        self.assertIn("SOLUSDT", mocked_text.call_args.args[0])
+        self.assertIn("NQUSDT", mocked_text.call_args.args[0])
         mocked_chart.assert_called_once()
         self.assertEqual(mocked_chart.call_args.args[0], [52.0, 54.0, 55.0])
         mocked_photo.assert_called_once()

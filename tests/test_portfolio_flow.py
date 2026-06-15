@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from src.ai.deepseek_rebalancer import ActiveRebalanceSelection
 from src.strategy import portfolio_strategy
 
 
@@ -23,7 +24,7 @@ def _config():
         "deepseek_reasoning_effort": "max",
         "deepseek_max_tokens": 8192,
         "deepseek_timeout_seconds": 300.0,
-        "passive_symbols": ["CLUSDT", "XAUUSDT", "QQQUSDT", "BTCUSDT"],
+        "passive_symbols": ["CLUSDT", "XAUUSDT", "BTCUSDT", "ETHUSDT"],
         "screener_quote": "USDT",
         "screener_timeout": 30.0,
         "screener_retries": 3,
@@ -37,6 +38,7 @@ def _active_slot():
         label="active1",
         kind="active",
         target_margin_ratio=0.125,
+        active_screening_mode="tradfi",
     )
 
 
@@ -70,7 +72,7 @@ def _passive_slot():
     )
 
 
-def _long_position(symbol="ETHUSDT"):
+def _long_position(symbol="ESUSDT"):
     return {
         "symbol": symbol,
         "positionAmt": "2",
@@ -82,7 +84,7 @@ def _long_position(symbol="ETHUSDT"):
     }
 
 
-def _short_position(symbol="ETHUSDT"):
+def _short_position(symbol="ESUSDT"):
     return {
         "symbol": symbol,
         "positionAmt": "-2",
@@ -94,34 +96,37 @@ def _short_position(symbol="ETHUSDT"):
     }
 
 
+def _close_prices(start=100.0, step=0.1, count=168):
+    return [start + (step * index) for index in range(count)]
+
+
 class PortfolioFlowTests(unittest.TestCase):
-    def test_active1_candidate_screening_uses_crypto_trend_screener(self):
+    def test_active1_candidate_screening_uses_tradfi_screener(self):
         with patch(
-            "src.strategy.portfolio_strategy.screen_active_symbol",
+            "src.strategy.portfolio_strategy.screen_active_tradfi_symbol",
             return_value={
-                "metadata": {"screening_mode": "crypto"},
+                "metadata": {"screening_mode": "tradfi"},
                 "selection": {
-                    "symbol": "ETHUSDT",
+                    "symbol": "ESUSDT",
                     "screening_decision": "LONG",
                     "screening_direction": "up",
-                    "selected": {"symbol": "ETHUSDT", "screening_decision": "LONG", "screening_direction": "up"},
+                    "selected": {"symbol": "ESUSDT", "screening_decision": "LONG", "screening_direction": "up"},
                 },
             },
-        ) as mocked_crypto, patch("src.strategy.portfolio_strategy.screen_active_tradfi_symbol") as mocked_tradfi:
+        ) as mocked_tradfi:
             candidate = portfolio_strategy._screen_active_candidate(
                 slot=_active_slot(),
                 config=_config(),
                 excluded_symbols=["BTCUSDT"],
             )
 
-        self.assertEqual(candidate["symbol"], "ETHUSDT")
+        self.assertEqual(candidate["symbol"], "ESUSDT")
         self.assertEqual(candidate["screening_decision"], "LONG")
         self.assertEqual(candidate["decision_source"], "active_screener")
-        mocked_crypto.assert_called_once()
-        mocked_tradfi.assert_not_called()
-        self.assertEqual(mocked_crypto.call_args.kwargs["quote"], "USDT")
-        self.assertEqual(mocked_crypto.call_args.kwargs["required_kline_interval"], "1h")
-        self.assertEqual(mocked_crypto.call_args.kwargs["required_kline_count"], 168)
+        mocked_tradfi.assert_called_once()
+        self.assertEqual(mocked_tradfi.call_args.kwargs["quote"], "USDT")
+        self.assertEqual(mocked_tradfi.call_args.kwargs["required_kline_interval"], "1h")
+        self.assertEqual(mocked_tradfi.call_args.kwargs["required_kline_count"], 168)
 
     def test_active2_candidate_screening_uses_tradfi_screener(self):
         with patch(
@@ -135,7 +140,7 @@ class PortfolioFlowTests(unittest.TestCase):
                     "selected": {"symbol": "ESUSDT", "screening_decision": "SHORT", "screening_direction": "down"},
                 },
             },
-        ) as mocked_tradfi, patch("src.strategy.portfolio_strategy.screen_active_symbol") as mocked_crypto:
+        ) as mocked_tradfi:
             candidate = portfolio_strategy._screen_active_candidate(
                 slot=_active2_slot(),
                 config=_config(),
@@ -146,7 +151,6 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertEqual(candidate["screening_decision"], "SHORT")
         self.assertEqual(candidate["decision_source"], "active_screener")
         mocked_tradfi.assert_called_once()
-        mocked_crypto.assert_not_called()
         self.assertEqual(mocked_tradfi.call_args.kwargs["quote"], "USDT")
         self.assertEqual(mocked_tradfi.call_args.kwargs["required_kline_interval"], "1h")
         self.assertEqual(mocked_tradfi.call_args.kwargs["required_kline_count"], 168)
@@ -163,7 +167,7 @@ class PortfolioFlowTests(unittest.TestCase):
                     "selected": {"symbol": "GCUSDT", "screening_decision": "LONG", "screening_direction": "up"},
                 },
             },
-        ) as mocked_tradfi, patch("src.strategy.portfolio_strategy.screen_active_symbol") as mocked_crypto:
+        ) as mocked_tradfi:
             candidate = portfolio_strategy._screen_active_candidate(
                 slot=_active3_slot(),
                 config=_config(),
@@ -173,7 +177,6 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertEqual(candidate["symbol"], "GCUSDT")
         self.assertEqual(candidate["screening_decision"], "LONG")
         mocked_tradfi.assert_called_once()
-        mocked_crypto.assert_not_called()
 
     def test_prompt_market_context_fetches_padding_and_serializes_requested_count(self):
         raw_klines = [[index, "0", "0", "0", str(float(index + 1))] for index in range(170)]
@@ -388,7 +391,8 @@ class PortfolioFlowTests(unittest.TestCase):
         slot_state = {
             "slot_id": "active_1",
             "kind": "active",
-            "symbol": "ETHUSDT",
+            "symbol": "ESUSDT",
+            "active_screening_mode": "tradfi",
             "last_ai_trigger_price": 100.0,
             "next_trigger_down": 99.0,
             "next_trigger_up": 101.0,
@@ -401,11 +405,11 @@ class PortfolioFlowTests(unittest.TestCase):
             "src.strategy.portfolio_strategy._evaluate_slot_direction",
         ) as mocked_ai, patch(
             "src.strategy.portfolio_strategy._rebalance_existing_position",
-            return_value={"success": True, "action": "kept_position_size", "position": {"symbol": "ETHUSDT"}},
+            return_value={"success": True, "action": "kept_position_size", "position": {"symbol": "ESUSDT"}},
         ) as mocked_rebalance, patch(
             "src.strategy.portfolio_strategy._screen_active_candidate",
             return_value={
-                "symbol": "ETHUSDT",
+                "symbol": "ESUSDT",
                 "screening_decision": "LONG",
                 "screening_direction": "up",
                 "decision_source": "active_screener",
@@ -435,8 +439,8 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertFalse(result["screening_triggered"])
         self.assertEqual(result["action"], "kept_active_position_until_stop_loss")
         self.assertIsNone(result["screening_decision"])
-        self.assertEqual(active_symbol, "ETHUSDT")
-        self.assertEqual(updated_state["symbol"], "ETHUSDT")
+        self.assertEqual(active_symbol, "ESUSDT")
+        self.assertEqual(updated_state["symbol"], "ESUSDT")
         self.assertEqual(updated_state["last_ai_decision"], "LONG")
         self.assertEqual(updated_state["entered_at"], "1970-01-01T00:00:00Z")
         self.assertEqual(updated_state["last_active_rank_checked_at"], "1970-01-01T00:00:00Z")
@@ -494,7 +498,7 @@ class PortfolioFlowTests(unittest.TestCase):
         with patch(
             "src.strategy.portfolio_strategy._screen_active_candidate",
             side_effect=portfolio_strategy.NoActiveCandidateError(
-                "active crypto volatility screener found no candidate with at least 168 1h valid close-price klines"
+                "active tradfi volatility screener found no candidate with at least 168 1h valid close-price klines"
             ),
         ):
             result, updated_state, active_symbol = portfolio_strategy._run_active_slot(
@@ -522,8 +526,9 @@ class PortfolioFlowTests(unittest.TestCase):
         slot_state = {
             "slot_id": "active_1",
             "kind": "active",
-            "symbol": "ETHUSDT",
-            "previous_active_symbol": "AAVEUSDT",
+            "symbol": "ESUSDT",
+            "previous_active_symbol": "NQUSDT",
+            "active_screening_mode": "tradfi",
         }
 
         def fail_cycle_dir():
@@ -545,7 +550,7 @@ class PortfolioFlowTests(unittest.TestCase):
                 as_of_ms=1,
                 cycle_dir_factory=fail_cycle_dir,
                 notification_callback=None,
-                recent_universe_symbols={"SOLUSDT"},
+                recent_universe_symbols={"YMUSDT"},
             )
 
         self.assertTrue(result["success"])
@@ -553,23 +558,24 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertIsNone(active_symbol)
         self.assertEqual(updated_state, slot_state)
         excluded_symbols = set(mocked_screen.call_args.kwargs["excluded_symbols"])
-        self.assertIn("ETHUSDT", excluded_symbols)
-        self.assertIn("AAVEUSDT", excluded_symbols)
-        self.assertIn("SOLUSDT", excluded_symbols)
+        self.assertIn("ESUSDT", excluded_symbols)
+        self.assertIn("NQUSDT", excluded_symbols)
+        self.assertIn("YMUSDT", excluded_symbols)
 
     def test_active_replacement_remembers_stale_symbol_as_previous(self):
         slot = _active_slot()
         slot_state = {
             "slot_id": "active_1",
             "kind": "active",
-            "symbol": "ETHUSDT",
-            "previous_active_symbol": "AAVEUSDT",
+            "symbol": "ESUSDT",
+            "previous_active_symbol": "NQUSDT",
+            "active_screening_mode": "tradfi",
         }
 
         with tempfile.TemporaryDirectory() as temp_dir, patch(
             "src.strategy.portfolio_strategy._screen_active_candidate",
             return_value={
-                "symbol": "BNBUSDT",
+                "symbol": "YMUSDT",
                 "screening_decision": "LONG",
                 "screening_direction": "up",
                 "close_prices": [300.0, 305.0, 310.0],
@@ -582,10 +588,10 @@ class PortfolioFlowTests(unittest.TestCase):
             return_value={"equity": 1000.0, "available_balance": 500.0},
         ), patch(
             "src.strategy.portfolio_strategy._place_direction_position",
-            return_value={"success": True, "action": "opened_new_position", "position": {"symbol": "BNBUSDT"}},
+            return_value={"success": True, "action": "opened_new_position", "position": {"symbol": "YMUSDT"}},
         ), patch(
             "src.strategy.portfolio_strategy._sync_position_after_trade",
-            return_value={"position": {"symbol": "BNBUSDT"}, "stop_sync": {"success": True}},
+            return_value={"position": {"symbol": "YMUSDT"}, "stop_sync": {"success": True}},
         ):
             result, updated_state, active_symbol = portfolio_strategy._run_active_slot(
                 slot=slot,
@@ -602,12 +608,12 @@ class PortfolioFlowTests(unittest.TestCase):
             )
 
         self.assertTrue(result["success"])
-        self.assertEqual(active_symbol, "BNBUSDT")
-        self.assertEqual(updated_state["symbol"], "BNBUSDT")
-        self.assertEqual(updated_state["previous_active_symbol"], "ETHUSDT")
+        self.assertEqual(active_symbol, "YMUSDT")
+        self.assertEqual(updated_state["symbol"], "YMUSDT")
+        self.assertEqual(updated_state["previous_active_symbol"], "ESUSDT")
         excluded_symbols = set(mocked_screen.call_args.kwargs["excluded_symbols"])
-        self.assertIn("ETHUSDT", excluded_symbols)
-        self.assertIn("AAVEUSDT", excluded_symbols)
+        self.assertIn("ESUSDT", excluded_symbols)
+        self.assertIn("NQUSDT", excluded_symbols)
 
     def test_active_new_candidate_uses_screening_decision_without_deepseek(self):
         slot = _active_slot()
@@ -620,7 +626,7 @@ class PortfolioFlowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir, patch(
             "src.strategy.portfolio_strategy._screen_active_candidate",
             return_value={
-                "symbol": "BNBUSDT",
+                "symbol": "NQUSDT",
                 "screening_decision": "SHORT",
                 "screening_direction": "down",
                 "close_prices": [210.0, 205.0, 200.0],
@@ -635,10 +641,10 @@ class PortfolioFlowTests(unittest.TestCase):
             return_value={"equity": 1000.0, "available_balance": 500.0},
         ), patch(
             "src.strategy.portfolio_strategy._place_direction_position",
-            return_value={"success": True, "action": "opened_new_position", "position": {"symbol": "BNBUSDT"}},
+            return_value={"success": True, "action": "opened_new_position", "position": {"symbol": "NQUSDT"}},
         ) as mocked_place, patch(
             "src.strategy.portfolio_strategy._sync_position_after_trade",
-            return_value={"position": {"symbol": "BNBUSDT"}, "stop_sync": {"success": True}},
+            return_value={"position": {"symbol": "NQUSDT"}, "stop_sync": {"success": True}},
         ):
             notifications = []
             result, updated_state, active_symbol = portfolio_strategy._run_active_slot(
@@ -659,17 +665,17 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertFalse(result["ai_triggered"])
         self.assertTrue(result["screening_triggered"])
         self.assertEqual(result["screening_decision"], "SHORT")
-        self.assertEqual(updated_state["symbol"], "BNBUSDT")
+        self.assertEqual(updated_state["symbol"], "NQUSDT")
         self.assertEqual(updated_state["last_ai_decision"], "SHORT")
         self.assertEqual(updated_state["entered_at"], "1970-01-01T00:00:00Z")
         self.assertEqual(updated_state["last_active_rank_checked_at"], "1970-01-01T00:00:00Z")
-        self.assertEqual(active_symbol, "BNBUSDT")
+        self.assertEqual(active_symbol, "NQUSDT")
         mocked_ai.assert_not_called()
         mocked_place.assert_called_once()
         self.assertEqual(mocked_place.call_args.kwargs["decision"], "SHORT")
         self.assertEqual([event_name for event_name, _ in notifications], ["active_screening_after"])
         active_payload = notifications[0][1]
-        self.assertEqual(active_payload["symbol"], "BNBUSDT")
+        self.assertEqual(active_payload["symbol"], "NQUSDT")
         self.assertEqual(active_payload["screening_decision"], "SHORT")
         self.assertEqual(active_payload["decision_source"], "active_screener")
         self.assertEqual(active_payload["close_prices"], [210.0, 205.0, 200.0])
@@ -685,7 +691,7 @@ class PortfolioFlowTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir, patch(
             "src.strategy.portfolio_strategy._screen_active_candidate",
-            return_value={"symbol": "SOLUSDT", "selection": {}, "metadata": {}},
+            return_value={"symbol": "YMUSDT", "selection": {}, "metadata": {}},
         ), patch("src.strategy.portfolio_strategy._reference_price", return_value=55.0), patch(
             "src.strategy.portfolio_strategy._evaluate_slot_direction",
         ) as mocked_ai:
@@ -707,7 +713,7 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertFalse(result["ai_triggered"])
         self.assertTrue(result["screening_triggered"])
         self.assertEqual(result["action"], "candidate_screening_direction_unavailable")
-        self.assertEqual(active_symbol, "SOLUSDT")
+        self.assertEqual(active_symbol, "YMUSDT")
         self.assertEqual(updated_state, slot_state)
         mocked_ai.assert_not_called()
 
@@ -716,31 +722,52 @@ class PortfolioFlowTests(unittest.TestCase):
         slot_state = {
             "slot_id": "active_1",
             "kind": "active",
-            "symbol": "ETHUSDT",
+            "symbol": "ESUSDT",
+            "active_screening_mode": "tradfi",
             "last_ai_decision": "LONG",
             "entered_at": "1970-01-01T00:00:00Z",
             "last_active_rank_checked_at": "1970-01-01T00:00:00Z",
         }
 
+        def select_current(**kwargs):
+            kwargs["analysis_sink"].update(
+                {"decision": {"selected_symbol": "ESUSDT", "reason": "Existing setup has broader momentum agreement."}}
+            )
+            return ActiveRebalanceSelection(
+                selected_symbol="ESUSDT",
+                reason="Existing setup has broader momentum agreement.",
+            )
+
         with tempfile.TemporaryDirectory() as temp_dir, patch(
-            "src.strategy.portfolio_strategy._reference_price", return_value=101.0
+            "src.strategy.portfolio_strategy._reference_price",
+            side_effect=[101.0, 201.0],
         ), patch(
             "src.strategy.portfolio_strategy._screen_active_candidate",
             return_value={
-                "symbol": "ETHUSDT",
-                "screening_decision": "LONG",
-                "screening_direction": "up",
-                "close_prices": [99.0, 100.0, 101.0],
+                "symbol": "NQUSDT",
+                "screening_decision": "SHORT",
+                "screening_direction": "down",
+                "close_prices": _close_prices(start=220.0, step=-0.1),
                 "decision_source": "active_screener",
-                "selection": {"symbol": "ETHUSDT", "selected": {"symbol": "ETHUSDT"}},
+                "selection": {"symbol": "NQUSDT", "selected": {"symbol": "NQUSDT"}},
                 "metadata": {},
-                "_screener_output": {"selection": {"symbol": "ETHUSDT"}},
+                "_screener_output": {"selection": {"symbol": "NQUSDT"}},
             },
         ) as mocked_screen, patch(
             "src.strategy.portfolio_strategy._close_existing_position"
         ) as mocked_close, patch(
             "src.strategy.portfolio_strategy._place_direction_position"
         ) as mocked_place, patch(
+            "src.strategy.portfolio_strategy._fetch_prompt_market_context",
+            return_value={
+                "timeframes": {"1h": _close_prices(start=90.0, step=0.1)},
+                "ai_prompt_timeframe": "1h",
+                "ai_prompt_candle_count": 168,
+            },
+        ), patch(
+            "src.strategy.portfolio_strategy.evaluate_active_rebalance_symbol",
+            side_effect=select_current,
+        ) as mocked_rebalancer, patch(
             "src.strategy.portfolio_strategy._sync_fixed_stop_loss",
             return_value={"success": True, "changed": False, "stop_loss_pct": 0.04},
         ) as mocked_stop:
@@ -762,13 +789,15 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertTrue(result["success"])
         self.assertTrue(result["screening_triggered"])
         self.assertEqual(result["trigger_reason"], "active_rank_review_due")
-        self.assertEqual(result["action"], "active_rank_review_position_kept")
-        self.assertEqual(active_symbol, "ETHUSDT")
-        self.assertEqual(updated_state["symbol"], "ETHUSDT")
+        self.assertEqual(result["action"], "active_rebalance_position_kept")
+        self.assertEqual(result["selected_symbol"], "ESUSDT")
+        self.assertEqual(active_symbol, "ESUSDT")
+        self.assertEqual(updated_state["symbol"], "ESUSDT")
         self.assertEqual(updated_state["entered_at"], "1970-01-01T00:00:00Z")
         self.assertEqual(updated_state["last_active_rank_checked_at"], "1970-01-02T00:00:01Z")
         mocked_screen.assert_called_once()
-        self.assertNotIn("ETHUSDT", mocked_screen.call_args.kwargs["excluded_symbols"])
+        self.assertIn("ESUSDT", mocked_screen.call_args.kwargs["excluded_symbols"])
+        mocked_rebalancer.assert_called_once()
         mocked_close.assert_not_called()
         mocked_place.assert_not_called()
         mocked_stop.assert_called_once()
@@ -779,40 +808,60 @@ class PortfolioFlowTests(unittest.TestCase):
         slot_state = {
             "slot_id": "active_1",
             "kind": "active",
-            "symbol": "ETHUSDT",
+            "symbol": "ESUSDT",
+            "active_screening_mode": "tradfi",
             "last_ai_decision": "LONG",
             "entered_at": "1970-01-01T00:00:00Z",
             "last_active_rank_checked_at": "1970-01-01T00:00:00Z",
         }
 
+        def select_candidate(**kwargs):
+            kwargs["analysis_sink"].update(
+                {"decision": {"selected_symbol": "NQUSDT", "reason": "Candidate has cleaner downside momentum."}}
+            )
+            return ActiveRebalanceSelection(
+                selected_symbol="NQUSDT",
+                reason="Candidate has cleaner downside momentum.",
+            )
+
         with tempfile.TemporaryDirectory() as temp_dir, patch(
             "src.strategy.portfolio_strategy._reference_price",
-            side_effect=[101.0, 55.0],
+            side_effect=[101.0, 205.0],
         ), patch(
             "src.strategy.portfolio_strategy._screen_active_candidate",
             return_value={
-                "symbol": "SOLUSDT",
+                "symbol": "NQUSDT",
                 "screening_decision": "SHORT",
                 "screening_direction": "down",
-                "close_prices": [60.0, 58.0, 55.0],
+                "close_prices": _close_prices(start=220.0, step=-0.1),
                 "decision_source": "active_screener",
-                "selection": {"symbol": "SOLUSDT", "selected": {"symbol": "SOLUSDT"}},
+                "selection": {"symbol": "NQUSDT", "selected": {"symbol": "NQUSDT"}},
                 "metadata": {},
-                "_screener_output": {"selection": {"symbol": "SOLUSDT"}},
+                "_screener_output": {"selection": {"symbol": "NQUSDT"}},
             },
         ) as mocked_screen, patch(
             "src.strategy.portfolio_strategy._close_existing_position",
-            return_value={"success": True, "action": "closed_position", "symbol": "ETHUSDT"},
+            return_value={"success": True, "action": "closed_position", "symbol": "ESUSDT"},
         ) as mocked_close, patch(
             "src.strategy.portfolio_strategy.get_account_overview",
             return_value={"equity": 1000.0, "available_balance": 500.0},
         ), patch(
             "src.strategy.portfolio_strategy._place_direction_position",
-            return_value={"success": True, "action": "opened_new_position", "position": {"symbol": "SOLUSDT"}},
+            return_value={"success": True, "action": "opened_new_position", "position": {"symbol": "NQUSDT"}},
         ) as mocked_place, patch(
             "src.strategy.portfolio_strategy._sync_position_after_trade",
-            return_value={"position": {"symbol": "SOLUSDT"}, "stop_sync": {"success": True}},
-        ):
+            return_value={"position": {"symbol": "NQUSDT"}, "stop_sync": {"success": True}},
+        ), patch(
+            "src.strategy.portfolio_strategy._fetch_prompt_market_context",
+            return_value={
+                "timeframes": {"1h": _close_prices(start=90.0, step=0.1)},
+                "ai_prompt_timeframe": "1h",
+                "ai_prompt_candle_count": 168,
+            },
+        ), patch(
+            "src.strategy.portfolio_strategy.evaluate_active_rebalance_symbol",
+            side_effect=select_candidate,
+        ) as mocked_rebalancer:
             notifications = []
             result, updated_state, active_symbol = portfolio_strategy._run_active_slot(
                 slot=slot,
@@ -830,19 +879,21 @@ class PortfolioFlowTests(unittest.TestCase):
 
         self.assertTrue(result["success"])
         self.assertTrue(result["screening_triggered"])
-        self.assertEqual(result["action"], "switched_active_position_by_rank")
-        self.assertEqual(result["previous_symbol"], "ETHUSDT")
-        self.assertEqual(result["candidate_symbol"], "SOLUSDT")
-        self.assertEqual(active_symbol, "SOLUSDT")
-        self.assertEqual(updated_state["symbol"], "SOLUSDT")
+        self.assertEqual(result["action"], "switched_active_position_by_rebalancer")
+        self.assertEqual(result["previous_symbol"], "ESUSDT")
+        self.assertEqual(result["candidate_symbol"], "NQUSDT")
+        self.assertEqual(result["selected_symbol"], "NQUSDT")
+        self.assertEqual(active_symbol, "NQUSDT")
+        self.assertEqual(updated_state["symbol"], "NQUSDT")
         self.assertEqual(updated_state["last_ai_decision"], "SHORT")
         self.assertEqual(updated_state["entered_at"], "1970-01-02T00:00:01Z")
         self.assertEqual(updated_state["last_active_rank_checked_at"], "1970-01-02T00:00:01Z")
         mocked_screen.assert_called_once()
-        self.assertNotIn("ETHUSDT", mocked_screen.call_args.kwargs["excluded_symbols"])
+        self.assertIn("ESUSDT", mocked_screen.call_args.kwargs["excluded_symbols"])
+        mocked_rebalancer.assert_called_once()
         mocked_close.assert_called_once()
         mocked_place.assert_called_once()
-        self.assertEqual(mocked_place.call_args.kwargs["symbol"], "SOLUSDT")
+        self.assertEqual(mocked_place.call_args.kwargs["symbol"], "NQUSDT")
         self.assertEqual(mocked_place.call_args.kwargs["decision"], "SHORT")
         self.assertEqual([event_name for event_name, _ in notifications], ["active_screening_after"])
 
@@ -925,7 +976,8 @@ class PortfolioFlowTests(unittest.TestCase):
         slot_state = {
             "slot_id": "active_1",
             "kind": "active",
-            "symbol": "ETHUSDT",
+            "symbol": "ESUSDT",
+            "active_screening_mode": "tradfi",
             "last_ai_trigger_price": 100.0,
             "next_trigger_down": 99.0,
             "next_trigger_up": 101.0,
@@ -939,11 +991,11 @@ class PortfolioFlowTests(unittest.TestCase):
             "src.strategy.portfolio_strategy._evaluate_slot_direction",
         ) as mocked_ai, patch(
             "src.strategy.portfolio_strategy._close_existing_position",
-            return_value={"success": True, "action": "closed_position", "symbol": "ETHUSDT"},
+            return_value={"success": True, "action": "closed_position", "symbol": "ESUSDT"},
         ) as mocked_close, patch(
             "src.strategy.portfolio_strategy._screen_active_candidate",
             return_value={
-                "symbol": "SOLUSDT",
+                "symbol": "NQUSDT",
                 "screening_decision": "LONG",
                 "screening_direction": "up",
                 "decision_source": "active_screener",
@@ -955,10 +1007,10 @@ class PortfolioFlowTests(unittest.TestCase):
             return_value={"equity": 1000.0, "available_balance": 500.0},
         ), patch(
             "src.strategy.portfolio_strategy._place_direction_position",
-            return_value={"success": True, "action": "opened_new_position", "position": {"symbol": "SOLUSDT"}},
+            return_value={"success": True, "action": "opened_new_position", "position": {"symbol": "NQUSDT"}},
         ) as mocked_place, patch(
             "src.strategy.portfolio_strategy._sync_position_after_trade",
-            return_value={"position": {"symbol": "SOLUSDT"}, "stop_sync": {"success": True}},
+            return_value={"position": {"symbol": "NQUSDT"}, "stop_sync": {"success": True}},
         ), patch(
             "src.strategy.portfolio_strategy._sync_fixed_stop_loss",
             return_value={"success": True, "changed": False, "stop_loss_pct": 0.04},
@@ -982,10 +1034,10 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertFalse(result["screening_triggered"])
         self.assertIsNone(result["screening_decision"])
         self.assertEqual(result["action"], "kept_active_position_until_stop_loss")
-        self.assertEqual(result["symbol"], "ETHUSDT")
-        self.assertEqual(updated_state["symbol"], "ETHUSDT")
+        self.assertEqual(result["symbol"], "ESUSDT")
+        self.assertEqual(updated_state["symbol"], "ESUSDT")
         self.assertEqual(updated_state["last_ai_decision"], "LONG")
-        self.assertEqual(active_symbol, "ETHUSDT")
+        self.assertEqual(active_symbol, "ESUSDT")
         mocked_ai.assert_not_called()
         mocked_close.assert_not_called()
         mocked_screen.assert_not_called()
