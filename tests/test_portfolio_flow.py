@@ -321,6 +321,110 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertEqual(result["cycle_dir"], temp_dir)
         self.assertTrue(artifact_exists)
 
+    def test_active_region_restriction_records_runtime_symbol_ban_for_next_slot(self):
+        slot1 = _active_slot()
+        slot2 = _active2_slot()
+        seen_bans = []
+
+        def run_active_slot(**kwargs):
+            seen_bans.append(tuple(kwargs.get("runtime_banned_symbols") or ()))
+            slot = kwargs["slot"]
+            slot_state = kwargs["slot_state"]
+            if slot.slot_id == "active_1":
+                slot_result = portfolio_strategy._slot_result_base(slot, "SKHYNIXUSDT")
+                slot_result.update(
+                    {
+                        "success": False,
+                        "action": "entry_order_failed",
+                        "screening_triggered": True,
+                        "screening_decision": "LONG",
+                        "execution": {
+                            "success": False,
+                            "action": "entry_order_failed",
+                            "order_error_code": -4412,
+                            "order_error_message": "not available in your region",
+                            "symbol_ban": {
+                                "symbol": "SKHYNIXUSDT",
+                                "reason": "binance_region_restricted",
+                                "source": "entry_order",
+                                "error_code": -4412,
+                                "error_message": "not available in your region",
+                            },
+                        },
+                    }
+                )
+                return slot_result, slot_state, "SKHYNIXUSDT"
+            slot_result = portfolio_strategy._slot_result_base(slot, None)
+            slot_result.update({"success": True, "action": "waiting_for_active_candidate"})
+            return slot_result, slot_state, None
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "src.strategy.portfolio_strategy._load_strategy_config", return_value=_config()
+        ), patch(
+            "src.strategy.portfolio_strategy._build_portfolio_slots",
+            return_value=[slot1, slot2],
+        ), patch(
+            "src.strategy.portfolio_strategy.get_binance_credentials", return_value=("key", "secret")
+        ), patch(
+            "src.strategy.portfolio_strategy.get_account_overview",
+            return_value={"equity": 1000.0, "available_balance": 500.0},
+        ), patch("src.strategy.portfolio_strategy.get_positions", return_value=[]), patch(
+            "src.strategy.portfolio_strategy._run_active_slot", side_effect=run_active_slot
+        ), patch(
+            "src.strategy.portfolio_strategy._create_cycle_dir", return_value=temp_dir
+        ):
+            result = portfolio_strategy.run_portfolio_cycle(
+                state={"version": portfolio_strategy.STATE_VERSION},
+                as_of_ms=2000,
+            )
+
+        self.assertFalse(result["success"])
+        ban = result["state_update"]["symbol_bans"]["SKHYNIXUSDT"]
+        self.assertEqual(ban["reason"], "binance_region_restricted")
+        self.assertEqual(ban["last_seen_at"], "1970-01-01T00:00:02Z")
+        self.assertEqual(ban["event_count"], 1)
+        self.assertEqual(seen_bans[0], ())
+        self.assertIn("SKHYNIXUSDT", seen_bans[1])
+
+    def test_slot_exception_is_captured_and_following_slots_continue(self):
+        passive_slot = _passive_slot()
+        active_slot = _active_slot()
+
+        def run_active_slot(**kwargs):
+            slot_result = portfolio_strategy._slot_result_base(kwargs["slot"], None)
+            slot_result.update({"success": True, "action": "waiting_for_active_candidate"})
+            return slot_result, kwargs["slot_state"], None
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "src.strategy.portfolio_strategy._load_strategy_config", return_value=_config()
+        ), patch(
+            "src.strategy.portfolio_strategy._build_portfolio_slots",
+            return_value=[passive_slot, active_slot],
+        ), patch(
+            "src.strategy.portfolio_strategy.get_binance_credentials", return_value=("key", "secret")
+        ), patch(
+            "src.strategy.portfolio_strategy.get_account_overview",
+            return_value={"equity": 1000.0, "available_balance": 500.0},
+        ), patch("src.strategy.portfolio_strategy.get_positions", return_value=[]), patch(
+            "src.strategy.portfolio_strategy._run_passive_slot", side_effect=RuntimeError("boom")
+        ), patch(
+            "src.strategy.portfolio_strategy._run_active_slot", side_effect=run_active_slot
+        ) as mocked_active, patch(
+            "src.strategy.portfolio_strategy._create_cycle_dir", return_value=temp_dir
+        ), patch(
+            "src.strategy.portfolio_strategy.logger"
+        ):
+            result = portfolio_strategy.run_portfolio_cycle(
+                state={"version": portfolio_strategy.STATE_VERSION},
+                as_of_ms=2000,
+            )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["slot_results"][0]["action"], "slot_execution_failed")
+        self.assertEqual(result["slot_results"][0]["error"], "boom")
+        self.assertEqual(result["slot_results"][1]["action"], "waiting_for_active_candidate")
+        mocked_active.assert_called_once()
+
     def test_passive_opposite_direction_reverses_same_symbol_without_rescreening(self):
         slot = _passive_slot()
         slot_state = {

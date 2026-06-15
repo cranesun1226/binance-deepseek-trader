@@ -25,6 +25,7 @@ from src.binance.trade_position import (
     get_position_snapshot,
     get_positions,
     get_reference_price,
+    is_permanent_symbol_restriction_error,
     place_market_entry_order,
     safe_decimal,
     set_leverage,
@@ -63,6 +64,9 @@ CONFIG_PATH = os.path.join(ROOT_DIR, "setting.yaml")
 DB_DIR = os.path.join(ROOT_DIR, "db")
 MAX_DB_CYCLE_DIRS = 20
 STATE_VERSION = "1.0.0"
+SYMBOL_BANS_STATE_KEY = "symbol_bans"
+SYMBOL_BAN_REASON_REGION_RESTRICTED = "binance_region_restricted"
+SYMBOL_BAN_SCOPE_ACTIVE_SCREENER = "active_screener"
 TRIGGER_PRICE_DIGITS = 8
 MANAGED_DECISIONS = {"LONG", "SHORT"}
 ACTIVE_SCREENING_MODES = {"crypto", "tradfi"}
@@ -90,6 +94,7 @@ MATERIAL_POSITION_RECORD_ACTIONS = {
     "reversed_position",
     "invalid_symbol_for_leverage",
     "set_leverage_failed",
+    "slot_execution_failed",
     "switch_close_failed",
     "switched_active_position_by_rebalancer",
     "switched_active_position_by_rank",
@@ -126,6 +131,76 @@ def _safe_int(value: Any, default: int) -> int:
 def _normalize_symbol(value: Any) -> Optional[str]:
     normalized = str(value or "").strip().upper()
     return normalized or None
+
+
+def _normalize_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return bool(default)
+
+
+def _normalize_optional_int(value: Any) -> Optional[int]:
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_symbol_ban_entry(symbol: Any, raw_entry: Any) -> Optional[Dict[str, Any]]:
+    normalized_symbol = _normalize_symbol(symbol)
+    if not normalized_symbol:
+        return None
+
+    payload = dict(raw_entry) if isinstance(raw_entry, dict) else {}
+    entry: Dict[str, Any] = {
+        "symbol": normalized_symbol,
+        "reason": str(payload.get("reason") or "manual").strip() or "manual",
+        "source": str(payload.get("source") or "scheduler_state").strip() or "scheduler_state",
+        "scope": str(payload.get("scope") or SYMBOL_BAN_SCOPE_ACTIVE_SCREENER).strip()
+        or SYMBOL_BAN_SCOPE_ACTIVE_SCREENER,
+        "permanent": _normalize_bool(payload.get("permanent"), True),
+        "event_count": max(1, _safe_int(payload.get("event_count", 1), 1)),
+    }
+    for key in ("first_seen_at", "last_seen_at", "error_message"):
+        value = payload.get(key)
+        if str(value or "").strip():
+            entry[key] = str(value).strip()
+    error_code = _normalize_optional_int(payload.get("error_code"))
+    if error_code is not None:
+        entry["error_code"] = error_code
+    return entry
+
+
+def _normalize_symbol_bans(raw_bans: Any) -> Dict[str, Dict[str, Any]]:
+    normalized: Dict[str, Dict[str, Any]] = {}
+    if isinstance(raw_bans, dict):
+        items = raw_bans.items()
+    elif isinstance(raw_bans, (list, tuple, set)):
+        items = []
+        for item in raw_bans:
+            if isinstance(item, dict):
+                items.append((item.get("symbol"), item))
+            else:
+                items.append((item, {}))
+    else:
+        items = []
+
+    for symbol, raw_entry in items:
+        entry = _normalize_symbol_ban_entry(symbol, raw_entry)
+        if entry is not None:
+            normalized[entry["symbol"]] = entry
+    return normalized
+
+
+def _runtime_banned_symbols(portfolio_state: Dict[str, Any]) -> list[str]:
+    return sorted(_normalize_symbol_bans(portfolio_state.get(SYMBOL_BANS_STATE_KEY)).keys())
 
 
 def _normalize_positive_int(value: Any, default: int) -> int:
@@ -331,6 +406,79 @@ def _resolve_as_of_ms(as_of_ms: Optional[int]) -> int:
 def _utc_iso_from_ms(as_of_ms: Optional[int]) -> str:
     resolved = _resolve_as_of_ms(as_of_ms)
     return datetime.fromtimestamp(resolved / 1000.0, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _symbol_ban_from_entry_order_error(
+    *,
+    symbol: str,
+    code: Optional[int],
+    message: Any,
+) -> Optional[Dict[str, Any]]:
+    normalized_symbol = _normalize_symbol(symbol)
+    if not normalized_symbol or not is_permanent_symbol_restriction_error(code, message):
+        return None
+    return {
+        "symbol": normalized_symbol,
+        "reason": SYMBOL_BAN_REASON_REGION_RESTRICTED,
+        "source": "entry_order",
+        "scope": SYMBOL_BAN_SCOPE_ACTIVE_SCREENER,
+        "permanent": True,
+        "error_code": code,
+        "error_message": str(message or "").strip(),
+    }
+
+
+def _collect_symbol_bans(payload: Any) -> list[Dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    bans: list[Dict[str, Any]] = []
+    symbol_ban = payload.get("symbol_ban")
+    if isinstance(symbol_ban, dict):
+        normalized = _normalize_symbol_ban_entry(symbol_ban.get("symbol"), symbol_ban)
+        if normalized is not None:
+            bans.append(normalized)
+    for child_key in ("execution", "close"):
+        bans.extend(_collect_symbol_bans(payload.get(child_key)))
+    return bans
+
+
+def _record_symbol_ban(
+    portfolio_state: Dict[str, Any],
+    symbol_ban: Dict[str, Any],
+    *,
+    as_of_ms: int,
+) -> Dict[str, Any]:
+    entry = _normalize_symbol_ban_entry(symbol_ban.get("symbol"), symbol_ban)
+    if entry is None:
+        return portfolio_state
+
+    timestamp = _utc_iso_from_ms(as_of_ms)
+    updated_state = dict(portfolio_state)
+    bans = _normalize_symbol_bans(updated_state.get(SYMBOL_BANS_STATE_KEY))
+    existing = bans.get(entry["symbol"], {})
+    event_count = max(0, _safe_int(existing.get("event_count", 0), 0)) + 1
+
+    merged = dict(existing)
+    merged.update(entry)
+    merged["symbol"] = entry["symbol"]
+    merged["first_seen_at"] = str(existing.get("first_seen_at") or entry.get("first_seen_at") or timestamp)
+    merged["last_seen_at"] = timestamp
+    merged["event_count"] = event_count
+    bans[entry["symbol"]] = _normalize_symbol_ban_entry(entry["symbol"], merged) or merged
+    updated_state[SYMBOL_BANS_STATE_KEY] = bans
+    return updated_state
+
+
+def _record_symbol_bans_from_slot_result(
+    portfolio_state: Dict[str, Any],
+    slot_result: Dict[str, Any],
+    *,
+    as_of_ms: int,
+) -> Dict[str, Any]:
+    updated_state = portfolio_state
+    for symbol_ban in _collect_symbol_bans(slot_result):
+        updated_state = _record_symbol_ban(updated_state, symbol_ban, as_of_ms=as_of_ms)
+    return updated_state
 
 
 def _parse_utc_iso_ms(value: Any) -> Optional[int]:
@@ -766,6 +914,7 @@ def _normalize_portfolio_state(previous_state: Optional[Dict[str, Any]], slots: 
     return {
         "version": STATE_VERSION,
         "slots": normalized_slots,
+        SYMBOL_BANS_STATE_KEY: _normalize_symbol_bans(raw.get(SYMBOL_BANS_STATE_KEY)),
         "last_cycle_time": raw.get("last_cycle_time"),
         "last_minute_slot": raw.get("last_minute_slot"),
         "last_cycle_result": raw.get("last_cycle_result"),
@@ -1144,7 +1293,7 @@ def _place_direction_position(
     )
     if order is None:
         failure_action = "set_leverage_failed" if str(msg or "") == "set_leverage_failed" else "entry_order_failed"
-        return {
+        failure = {
             "success": False,
             "action": failure_action,
             "order_error_code": code,
@@ -1154,6 +1303,10 @@ def _place_direction_position(
             "requested_notional_usdt": desired_notional,
             "order_plan": order_plan,
         }
+        symbol_ban = _symbol_ban_from_entry_order_error(symbol=symbol, code=code, message=msg)
+        if symbol_ban is not None:
+            failure["symbol_ban"] = symbol_ban
+        return failure
     return {
         "success": True,
         "action": "opened_new_position",
@@ -1944,6 +2097,14 @@ def _slot_result_base(slot: PortfolioSlot, symbol: Optional[str]) -> Dict[str, A
     }
 
 
+def _slot_exception_result(slot: PortfolioSlot, slot_state: Dict[str, Any], exc: Exception) -> Dict[str, Any]:
+    fallback_symbol = slot.symbol if slot.kind == "passive" else _normalize_symbol(slot_state.get("symbol"))
+    result = _slot_result_base(slot, fallback_symbol)
+    result["action"] = "slot_execution_failed"
+    result["error"] = str(exc)
+    return result
+
+
 def _run_passive_slot(
     *,
     slot: PortfolioSlot,
@@ -2124,12 +2285,18 @@ def _active_exclusions(
     config: Dict[str, Any],
     open_positions: Sequence[Dict[str, Any]],
     reserved_symbols: set[str],
+    banned_symbols: Sequence[str] = (),
     recent_universe_symbols: Sequence[str] = (),
     old_symbol: Optional[str] = None,
     allowed_symbol: Optional[str] = None,
 ) -> list[str]:
     allowed = _normalize_symbol(allowed_symbol)
     excluded = set(config["passive_symbols"])
+    excluded.update(
+        symbol
+        for symbol in (_normalize_symbol(value) for value in banned_symbols)
+        if symbol and symbol != allowed
+    )
     excluded.update(symbol for symbol in reserved_symbols if _normalize_symbol(symbol) != allowed)
     excluded.update(
         symbol
@@ -2159,6 +2326,7 @@ def _run_active_slot(
     cycle_dir_factory: CycleDirFactory,
     notification_callback: NotificationCallback,
     recent_universe_symbols: Sequence[str] = (),
+    runtime_banned_symbols: Sequence[str] = (),
 ) -> tuple[Dict[str, Any], Dict[str, Any], Optional[str]]:
     state_symbol = _normalize_symbol(slot_state.get("symbol"))
     slot_universe_symbols = {
@@ -2260,6 +2428,7 @@ def _run_active_slot(
                     config=config,
                     open_positions=open_positions,
                     reserved_symbols=reserved_symbols,
+                    banned_symbols=runtime_banned_symbols,
                     recent_universe_symbols=slot_universe_symbols,
                     allowed_symbol=current_symbol if active_mode_changed else None,
                 ),
@@ -2706,6 +2875,7 @@ def _run_active_slot(
                     config=config,
                     open_positions=open_positions,
                     reserved_symbols=reserved_symbols,
+                    banned_symbols=runtime_banned_symbols,
                     recent_universe_symbols=slot_universe_symbols,
                     old_symbol=state_symbol,
                 ),
@@ -2865,24 +3035,42 @@ def run_portfolio_cycle(
         result["error"] = str(exc)
         return result
 
-    account_overview = get_account_overview(api_key, api_secret)
+    try:
+        account_overview = get_account_overview(api_key, api_secret)
+    except Exception as exc:
+        logger.error("Account overview fetch raised: %s", exc, exc_info=True)
+        result["action"] = "account_overview_unavailable"
+        result["error"] = str(exc)
+        return result
     if not isinstance(account_overview, dict):
         result["action"] = "account_overview_unavailable"
         return result
     result["account_overview"] = dict(account_overview)
 
-    positions = get_positions(api_key, api_secret)
+    try:
+        positions = get_positions(api_key, api_secret)
+    except Exception as exc:
+        logger.error("Positions fetch raised: %s", exc, exc_info=True)
+        result["action"] = "positions_fetch_failed"
+        result["error"] = str(exc)
+        return result
     if positions is None:
         result["action"] = "positions_fetch_failed"
         return result
 
     managed_symbols = _managed_state_symbols(portfolio_state)
-    unmanaged_closes = _close_unmanaged_positions(
-        api_key=api_key,
-        api_secret=api_secret,
-        positions=positions,
-        managed_symbols=managed_symbols,
-    )
+    try:
+        unmanaged_closes = _close_unmanaged_positions(
+            api_key=api_key,
+            api_secret=api_secret,
+            positions=positions,
+            managed_symbols=managed_symbols,
+        )
+    except Exception as exc:
+        logger.error("Unmanaged position close pass raised: %s", exc, exc_info=True)
+        result["action"] = "unmanaged_position_close_failed"
+        result["error"] = str(exc)
+        return result
     if unmanaged_closes:
         result["unmanaged_position_closes"] = unmanaged_closes
         positions = get_positions(api_key, api_secret) or []
@@ -2890,52 +3078,66 @@ def run_portfolio_cycle(
     reserved_symbols: set[str] = set()
     recent_active_symbols_by_mode = _active_recent_symbols_by_mode(slots, portfolio_state)
     for slot in slots:
-        positions = get_positions(api_key, api_secret)
-        if positions is None:
-            slot_result = _slot_result_base(slot, slot.symbol)
-            slot_result["action"] = "positions_fetch_failed"
-            result["slot_results"].append(slot_result)
-            continue
-        account_overview = get_account_overview(api_key, api_secret) or account_overview
         slot_state = dict(portfolio_state["slots"].get(slot.slot_id) or _empty_slot_state(slot))
-        positions_map = _positions_by_symbol(positions)
+        try:
+            positions = get_positions(api_key, api_secret)
+            if positions is None:
+                slot_result = _slot_result_base(slot, slot.symbol)
+                slot_result["action"] = "positions_fetch_failed"
+                updated_slot_state = slot_state
+                reserved_active_symbol = None
+            else:
+                account_overview = get_account_overview(api_key, api_secret) or account_overview
+                positions_map = _positions_by_symbol(positions)
 
-        if slot.kind == "passive":
-            position = positions_map.get(str(slot.symbol))
-            slot_result, updated_slot_state = _run_passive_slot(
-                slot=slot,
-                slot_state=slot_state,
-                config=config,
-                api_key=api_key,
-                api_secret=api_secret,
-                account_overview=account_overview,
-                position=position,
-                as_of_ms=resolved_as_of_ms,
-                cycle_dir_factory=ensure_cycle_dir,
-                notification_callback=notification_callback,
+                if slot.kind == "passive":
+                    position = positions_map.get(str(slot.symbol))
+                    slot_result, updated_slot_state = _run_passive_slot(
+                        slot=slot,
+                        slot_state=slot_state,
+                        config=config,
+                        api_key=api_key,
+                        api_secret=api_secret,
+                        account_overview=account_overview,
+                        position=position,
+                        as_of_ms=resolved_as_of_ms,
+                        cycle_dir_factory=ensure_cycle_dir,
+                        notification_callback=notification_callback,
+                    )
+                    reserved_active_symbol = None
+                    if slot.symbol:
+                        reserved_symbols.add(slot.symbol)
+                else:
+                    slot_result, updated_slot_state, reserved_active_symbol = _run_active_slot(
+                        slot=slot,
+                        slot_state=slot_state,
+                        config=config,
+                        api_key=api_key,
+                        api_secret=api_secret,
+                        account_overview=account_overview,
+                        open_positions=positions,
+                        reserved_symbols=reserved_symbols,
+                        as_of_ms=resolved_as_of_ms,
+                        cycle_dir_factory=ensure_cycle_dir,
+                        notification_callback=notification_callback,
+                        recent_universe_symbols=recent_active_symbols_by_mode.get(
+                            _active_screening_mode(slot),
+                            set(),
+                        ),
+                        runtime_banned_symbols=_runtime_banned_symbols(portfolio_state),
+                    )
+        except Exception as exc:
+            logger.error(
+                "Slot execution failed | %s",
+                format_log_details({"slot_id": slot.slot_id, "slot_kind": slot.kind, "error": str(exc)}),
+                exc_info=True,
             )
-            portfolio_state["slots"][slot.slot_id] = updated_slot_state
-            if slot.symbol:
-                reserved_symbols.add(slot.symbol)
-        else:
-            slot_result, updated_slot_state, reserved_active_symbol = _run_active_slot(
-                slot=slot,
-                slot_state=slot_state,
-                config=config,
-                api_key=api_key,
-                api_secret=api_secret,
-                account_overview=account_overview,
-                open_positions=positions,
-                reserved_symbols=reserved_symbols,
-                as_of_ms=resolved_as_of_ms,
-                cycle_dir_factory=ensure_cycle_dir,
-                notification_callback=notification_callback,
-                recent_universe_symbols=recent_active_symbols_by_mode.get(
-                    _active_screening_mode(slot),
-                    set(),
-                ),
-            )
-            portfolio_state["slots"][slot.slot_id] = updated_slot_state
+            slot_result = _slot_exception_result(slot, slot_state, exc)
+            updated_slot_state = slot_state
+            reserved_active_symbol = None
+
+        portfolio_state["slots"][slot.slot_id] = updated_slot_state
+        if slot.kind == "active":
             recent_active_symbols_by_mode.setdefault(_active_screening_mode(slot), set()).update(
                 _active_slot_memory_symbols(updated_slot_state)
             )
@@ -2943,6 +3145,11 @@ def run_portfolio_cycle(
                 reserved_symbols.add(reserved_active_symbol)
 
         result["slot_results"].append(slot_result)
+        portfolio_state = _record_symbol_bans_from_slot_result(
+            portfolio_state,
+            slot_result,
+            as_of_ms=resolved_as_of_ms,
+        )
         if bool(slot_result.get("ai_triggered")):
             result["ai_triggered"] = True
         if bool(slot_result.get("screening_triggered")):

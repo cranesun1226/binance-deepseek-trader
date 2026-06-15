@@ -334,6 +334,62 @@ class PortfolioHelperTests(unittest.TestCase):
 
         self.assertEqual(grouped["tradfi"], {"ESUSDT", "NQUSDT", "GCUSDT", "YMUSDT"})
 
+    def test_runtime_symbol_bans_are_normalized_and_excluded_from_active_screening(self):
+        config = {
+            "passive_symbols": ["CLUSDT", "XAUUSDT", "BTCUSDT", "ETHUSDT"],
+        }
+        slots = portfolio_strategy._build_portfolio_slots(config)
+        state = portfolio_strategy._normalize_portfolio_state(
+            {
+                "version": portfolio_strategy.STATE_VERSION,
+                "slots": {},
+                "symbol_bans": ["skhynixusdt"],
+            },
+            slots,
+        )
+
+        self.assertIn("SKHYNIXUSDT", state["symbol_bans"])
+        excluded = portfolio_strategy._active_exclusions(
+            config=config,
+            open_positions=[],
+            reserved_symbols=set(),
+            banned_symbols=portfolio_strategy._runtime_banned_symbols(state),
+        )
+        self.assertIn("SKHYNIXUSDT", excluded)
+
+    def test_record_symbol_ban_updates_existing_scheduler_state_entry(self):
+        state = {
+            "version": portfolio_strategy.STATE_VERSION,
+            "slots": {},
+            "symbol_bans": {
+                "SKHYNIXUSDT": {
+                    "symbol": "SKHYNIXUSDT",
+                    "reason": "binance_region_restricted",
+                    "first_seen_at": "1970-01-01T00:00:01Z",
+                    "last_seen_at": "1970-01-01T00:00:01Z",
+                    "event_count": 2,
+                }
+            },
+        }
+
+        updated = portfolio_strategy._record_symbol_ban(
+            state,
+            {
+                "symbol": "SKHYNIXUSDT",
+                "reason": "binance_region_restricted",
+                "source": "entry_order",
+                "error_code": -4412,
+                "error_message": "not available in your region",
+            },
+            as_of_ms=2000,
+        )
+
+        ban = updated["symbol_bans"]["SKHYNIXUSDT"]
+        self.assertEqual(ban["event_count"], 3)
+        self.assertEqual(ban["first_seen_at"], "1970-01-01T00:00:01Z")
+        self.assertEqual(ban["last_seen_at"], "1970-01-01T00:00:02Z")
+        self.assertEqual(ban["error_code"], -4412)
+
     def test_legacy_active3_crypto_state_is_marked_for_tradfi_migration(self):
         config = {
             "passive_symbols": ["CLUSDT", "XAUUSDT", "BTCUSDT", "ETHUSDT"],

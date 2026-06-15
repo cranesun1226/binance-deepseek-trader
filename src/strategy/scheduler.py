@@ -65,6 +65,7 @@ ACTION_LABELS = {
     "screener_selection_failed": "Active screener failed",
     "candidate_screening_direction_unavailable": "Candidate screening direction unavailable",
     "ai_decision_failed": "AI decision failed",
+    "slot_execution_failed": "Slot execution failed",
     "switch_close_failed": "Active rank switch close failed",
     "entry_order_failed": "Entry order failed",
     "stop_loss_sync_failed": "Stop-loss sync failed",
@@ -112,6 +113,7 @@ class TradingScheduler:
         return {
             "version": STATE_VERSION,
             "slots": {},
+            "symbol_bans": {},
             "last_cycle_time": None,
             "last_minute_slot": None,
             "last_cycle_result": None,

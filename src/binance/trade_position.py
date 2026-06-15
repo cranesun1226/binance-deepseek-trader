@@ -37,7 +37,14 @@ INSTRUMENT_FILTER_CACHE: Dict[str, Dict[str, Decimal]] = {}
 _EXCHANGE_INFO_BY_SYMBOL: Dict[str, Dict[str, Any]] = {}
 ENTRY_ORDER_RETRY_QTY_FACTOR = Decimal("0.99")
 ENTRY_ORDER_MAX_ATTEMPTS = 25
-NON_RETRYABLE_ENTRY_ERROR_CODES = {-1111, -4164, -4411}
+PERMANENT_SYMBOL_RESTRICTION_ERROR_CODES = {-4412}
+PERMANENT_SYMBOL_RESTRICTION_MESSAGE_PATTERNS = (
+    "not available in your region",
+    "compliance with local regulations",
+    "restricted in your region",
+    "restricted in your country",
+)
+NON_RETRYABLE_ENTRY_ERROR_CODES = {-1111, -4164, -4411, *PERMANENT_SYMBOL_RESTRICTION_ERROR_CODES}
 
 # Numeric helpers and exchange metadata.
 
@@ -60,6 +67,14 @@ def decimal_to_str(value: Decimal) -> str:
     if "." in text:
         text = text.rstrip("0").rstrip(".")
     return text or "0"
+
+
+def is_permanent_symbol_restriction_error(code: Optional[int], message: Any) -> bool:
+    """Return True when an exchange error means this symbol should not be retried."""
+    if code in PERMANENT_SYMBOL_RESTRICTION_ERROR_CODES:
+        return True
+    text = str(message or "").strip().lower()
+    return any(pattern in text for pattern in PERMANENT_SYMBOL_RESTRICTION_MESSAGE_PATTERNS)
 
 
 def _base_url() -> str:
@@ -917,6 +932,7 @@ def place_market_entry_order(
         can_retry = (
             code is not None
             and code not in NON_RETRYABLE_ENTRY_ERROR_CODES
+            and not is_permanent_symbol_restriction_error(code, msg)
             and attempt < ENTRY_ORDER_MAX_ATTEMPTS
         )
         if not can_retry:
