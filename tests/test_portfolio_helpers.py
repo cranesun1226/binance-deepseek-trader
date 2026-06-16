@@ -5,29 +5,33 @@ from src.strategy import portfolio_strategy
 
 
 class PortfolioHelperTests(unittest.TestCase):
-    def test_default_config_builds_eight_slots_in_priority_order(self):
+    def test_default_config_builds_four_slots_in_priority_order(self):
         config = {
-            "passive_symbols": ["CLUSDT", "XAUUSDT", "BTCUSDT", "ETHUSDT"],
+            "passive_symbols": ["CLUSDT", "BTCUSDT", "XAUUSDT"],
         }
 
         slots = portfolio_strategy._build_portfolio_slots(config)
 
         self.assertEqual([slot.slot_id for slot in slots], [
             "passive_cl",
-            "passive_xau",
             "passive_btc",
-            "passive_eth",
+            "passive_xau",
             "active_1",
-            "active_2",
-            "active_3",
-            "active_4",
         ])
-        self.assertEqual([slot.symbol for slot in slots[:4]], ["CLUSDT", "XAUUSDT", "BTCUSDT", "ETHUSDT"])
-        self.assertEqual([slot.target_margin_ratio for slot in slots], [0.125] * 8)
-        self.assertEqual(slots[4].active_screening_mode, "tradfi")
-        self.assertEqual(slots[5].active_screening_mode, "tradfi")
-        self.assertEqual(slots[6].active_screening_mode, "tradfi")
-        self.assertEqual(slots[7].active_screening_mode, "tradfi")
+        self.assertEqual([slot.symbol for slot in slots[:3]], ["CLUSDT", "BTCUSDT", "XAUUSDT"])
+        self.assertEqual([slot.target_margin_ratio for slot in slots], [0.25] * 4)
+        self.assertEqual(slots[3].active_screening_mode, "tradfi")
+
+    def test_passive_symbol_normalization_requires_three_unique_symbols(self):
+        with patch("src.strategy.portfolio_strategy.logger") as mocked_logger:
+            too_many = portfolio_strategy._normalize_passive_symbols(
+                ["DOGEUSDT", "SOLUSDT", "ADAUSDT", "BNBUSDT"]
+            )
+            duplicate = portfolio_strategy._normalize_passive_symbols(["CLUSDT", "BTCUSDT", "BTCUSDT"])
+
+        self.assertEqual(too_many, ["CLUSDT", "BTCUSDT", "XAUUSDT"])
+        self.assertEqual(duplicate, ["CLUSDT", "BTCUSDT", "XAUUSDT"])
+        self.assertEqual(mocked_logger.warning.call_count, 2)
 
     def test_deepseek_reasoning_effort_normalization_matches_api_values(self):
         self.assertEqual(portfolio_strategy._normalize_reasoning_effort("xhigh"), "max")
@@ -40,7 +44,7 @@ class PortfolioHelperTests(unittest.TestCase):
             slot_id="active_1",
             label="active1",
             kind="active",
-            target_margin_ratio=0.125,
+            target_margin_ratio=0.25,
         )
 
         target = portfolio_strategy._target_notional_usdt(
@@ -50,21 +54,21 @@ class PortfolioHelperTests(unittest.TestCase):
             leverage=2,
         )
 
-        self.assertEqual(target, 247.5)
+        self.assertEqual(target, 495.0)
 
     def test_slot_leverage_defaults_passive_and_active_to_2x(self):
         passive = portfolio_strategy.PortfolioSlot(
             slot_id="passive_cl",
             label="CLUSDT",
             kind="passive",
-            target_margin_ratio=0.125,
+            target_margin_ratio=0.25,
             symbol="CLUSDT",
         )
         active = portfolio_strategy.PortfolioSlot(
             slot_id="active_1",
             label="active1",
             kind="active",
-            target_margin_ratio=0.125,
+            target_margin_ratio=0.25,
         )
 
         self.assertEqual(portfolio_strategy._leverage_for_slot(passive, {}), 2)
@@ -157,9 +161,9 @@ class PortfolioHelperTests(unittest.TestCase):
         result = portfolio_strategy._rebalance_existing_position(
             api_key="key",
             api_secret="secret",
-            symbol="ETHUSDT",
+            symbol="XAUUSDT",
             position={
-                "symbol": "ETHUSDT",
+                "symbol": "XAUUSDT",
                 "positionAmt": "2",
                 "side": "Buy",
                 "entryPrice": "100",
@@ -250,20 +254,20 @@ class PortfolioHelperTests(unittest.TestCase):
     def test_reverse_existing_position_closes_then_opens_opposite_immediately(self):
         with patch(
             "src.strategy.portfolio_strategy._close_existing_position",
-            return_value={"success": True, "action": "closed_position", "symbol": "ETHUSDT"},
+            return_value={"success": True, "action": "closed_position", "symbol": "XAUUSDT"},
         ) as mocked_close, patch(
             "src.strategy.portfolio_strategy._place_direction_position",
             return_value={"success": True, "action": "opened_new_position"},
         ) as mocked_place, patch(
             "src.strategy.portfolio_strategy._sync_position_after_trade",
-            return_value={"position": {"symbol": "ETHUSDT", "direction": "short"}, "stop_sync": {"success": True}},
+            return_value={"position": {"symbol": "XAUUSDT", "direction": "short"}, "stop_sync": {"success": True}},
         ) as mocked_sync:
             result = portfolio_strategy._reverse_existing_position(
                 api_key="key",
                 api_secret="secret",
-                symbol="ETHUSDT",
+                symbol="XAUUSDT",
                 position={
-                    "symbol": "ETHUSDT",
+                    "symbol": "XAUUSDT",
                     "positionAmt": "2",
                     "side": "Buy",
                     "entryPrice": "100",
@@ -281,7 +285,7 @@ class PortfolioHelperTests(unittest.TestCase):
         self.assertEqual(result["action"], "reversed_position")
         mocked_close.assert_called_once()
         mocked_place.assert_called_once()
-        self.assertEqual(mocked_place.call_args.kwargs["symbol"], "ETHUSDT")
+        self.assertEqual(mocked_place.call_args.kwargs["symbol"], "XAUUSDT")
         self.assertEqual(mocked_place.call_args.kwargs["decision"], "SHORT")
         mocked_sync.assert_called_once()
         self.assertEqual(mocked_sync.call_args.kwargs["expected_decision"], "SHORT")
@@ -293,28 +297,33 @@ class PortfolioHelperTests(unittest.TestCase):
         self.assertLess(levels["next_trigger_down"], levels["trigger_price"])
         self.assertGreater(levels["next_trigger_up"], levels["trigger_price"])
 
-    def test_duplicate_active_state_symbol_is_cleared_for_later_slot(self):
+    def test_legacy_removed_slots_are_dropped_from_normalized_state(self):
         config = {
-            "passive_symbols": ["CLUSDT", "XAUUSDT", "BTCUSDT", "ETHUSDT"],
+            "passive_symbols": ["CLUSDT", "BTCUSDT", "XAUUSDT"],
         }
         slots = portfolio_strategy._build_portfolio_slots(config)
         state = portfolio_strategy._normalize_portfolio_state(
             {
                 "version": portfolio_strategy.STATE_VERSION,
                 "slots": {
+                    "passive_eth": {"symbol": "ADAUSDT", "last_ai_decision": "LONG"},
                     "active_1": {"symbol": "ESUSDT", "last_ai_decision": "LONG"},
                     "active_2": {"symbol": "ESUSDT", "last_ai_decision": "SHORT"},
+                    "active_3": {"symbol": "GCUSDT"},
+                    "active_4": {"symbol": "YMUSDT"},
                 },
             },
             slots,
         )
 
         self.assertEqual(state["slots"]["active_1"]["symbol"], "ESUSDT")
-        self.assertIsNone(state["slots"]["active_2"]["symbol"])
+        self.assertEqual(set(state["slots"]), {"passive_cl", "passive_btc", "passive_xau", "active_1"})
+        self.assertNotIn("passive_eth", state["slots"])
+        self.assertNotIn("active_2", state["slots"])
 
     def test_active_recent_symbols_are_grouped_by_screening_universe(self):
         config = {
-            "passive_symbols": ["CLUSDT", "XAUUSDT", "BTCUSDT", "ETHUSDT"],
+            "passive_symbols": ["CLUSDT", "BTCUSDT", "XAUUSDT"],
         }
         slots = portfolio_strategy._build_portfolio_slots(config)
         state = portfolio_strategy._normalize_portfolio_state(
@@ -332,11 +341,11 @@ class PortfolioHelperTests(unittest.TestCase):
 
         grouped = portfolio_strategy._active_recent_symbols_by_mode(slots, state)
 
-        self.assertEqual(grouped["tradfi"], {"ESUSDT", "NQUSDT", "GCUSDT", "YMUSDT"})
+        self.assertEqual(grouped["tradfi"], {"ESUSDT", "NQUSDT"})
 
     def test_runtime_symbol_bans_are_normalized_and_excluded_from_active_screening(self):
         config = {
-            "passive_symbols": ["CLUSDT", "XAUUSDT", "BTCUSDT", "ETHUSDT"],
+            "passive_symbols": ["CLUSDT", "BTCUSDT", "XAUUSDT"],
         }
         slots = portfolio_strategy._build_portfolio_slots(config)
         state = portfolio_strategy._normalize_portfolio_state(
@@ -390,16 +399,16 @@ class PortfolioHelperTests(unittest.TestCase):
         self.assertEqual(ban["last_seen_at"], "1970-01-01T00:00:02Z")
         self.assertEqual(ban["error_code"], -4412)
 
-    def test_legacy_active3_crypto_state_is_marked_for_tradfi_migration(self):
+    def test_legacy_active1_crypto_state_is_marked_for_tradfi_migration(self):
         config = {
-            "passive_symbols": ["CLUSDT", "XAUUSDT", "BTCUSDT", "ETHUSDT"],
+            "passive_symbols": ["CLUSDT", "BTCUSDT", "XAUUSDT"],
         }
         slots = portfolio_strategy._build_portfolio_slots(config)
         state = portfolio_strategy._normalize_portfolio_state(
             {
                 "version": portfolio_strategy.STATE_VERSION,
                 "slots": {
-                    "active_3": {
+                    "active_1": {
                         "symbol": "BNBUSDT",
                         "last_ai_decision": "LONG",
                         "entered_at": "1970-01-01T00:00:00Z",
@@ -410,10 +419,10 @@ class PortfolioHelperTests(unittest.TestCase):
             slots,
         )
 
-        active3_state = state["slots"]["active_3"]
-        self.assertEqual(active3_state["active_screening_mode"], "tradfi")
-        self.assertTrue(active3_state["active_screening_mode_changed"])
-        self.assertEqual(active3_state["previous_active_screening_mode"], "crypto")
+        active1_state = state["slots"]["active_1"]
+        self.assertEqual(active1_state["active_screening_mode"], "tradfi")
+        self.assertTrue(active1_state["active_screening_mode_changed"])
+        self.assertEqual(active1_state["previous_active_screening_mode"], "crypto")
 
 
 if __name__ == "__main__":

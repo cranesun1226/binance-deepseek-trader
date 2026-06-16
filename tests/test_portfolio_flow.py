@@ -24,7 +24,7 @@ def _config():
         "deepseek_reasoning_effort": "max",
         "deepseek_max_tokens": 8192,
         "deepseek_timeout_seconds": 300.0,
-        "passive_symbols": ["CLUSDT", "XAUUSDT", "BTCUSDT", "ETHUSDT"],
+        "passive_symbols": ["CLUSDT", "BTCUSDT", "XAUUSDT"],
         "screener_quote": "USDT",
         "screener_timeout": 30.0,
         "screener_retries": 3,
@@ -37,27 +37,7 @@ def _active_slot():
         slot_id="active_1",
         label="active1",
         kind="active",
-        target_margin_ratio=0.125,
-        active_screening_mode="tradfi",
-    )
-
-
-def _active2_slot():
-    return portfolio_strategy.PortfolioSlot(
-        slot_id="active_2",
-        label="active2",
-        kind="active",
-        target_margin_ratio=0.125,
-        active_screening_mode="tradfi",
-    )
-
-
-def _active3_slot():
-    return portfolio_strategy.PortfolioSlot(
-        slot_id="active_3",
-        label="active3",
-        kind="active",
-        target_margin_ratio=0.125,
+        target_margin_ratio=0.25,
         active_screening_mode="tradfi",
     )
 
@@ -67,7 +47,7 @@ def _passive_slot():
         slot_id="passive_cl",
         label="CLUSDT",
         kind="passive",
-        target_margin_ratio=0.125,
+        target_margin_ratio=0.25,
         symbol="CLUSDT",
     )
 
@@ -127,56 +107,6 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertEqual(mocked_tradfi.call_args.kwargs["quote"], "USDT")
         self.assertEqual(mocked_tradfi.call_args.kwargs["required_kline_interval"], "1h")
         self.assertEqual(mocked_tradfi.call_args.kwargs["required_kline_count"], 168)
-
-    def test_active2_candidate_screening_uses_tradfi_screener(self):
-        with patch(
-            "src.strategy.portfolio_strategy.screen_active_tradfi_symbol",
-            return_value={
-                "metadata": {"screening_mode": "tradfi"},
-                "selection": {
-                    "symbol": "ESUSDT",
-                    "screening_decision": "SHORT",
-                    "screening_direction": "down",
-                    "selected": {"symbol": "ESUSDT", "screening_decision": "SHORT", "screening_direction": "down"},
-                },
-            },
-        ) as mocked_tradfi:
-            candidate = portfolio_strategy._screen_active_candidate(
-                slot=_active2_slot(),
-                config=_config(),
-                excluded_symbols=["CLUSDT"],
-            )
-
-        self.assertEqual(candidate["symbol"], "ESUSDT")
-        self.assertEqual(candidate["screening_decision"], "SHORT")
-        self.assertEqual(candidate["decision_source"], "active_screener")
-        mocked_tradfi.assert_called_once()
-        self.assertEqual(mocked_tradfi.call_args.kwargs["quote"], "USDT")
-        self.assertEqual(mocked_tradfi.call_args.kwargs["required_kline_interval"], "1h")
-        self.assertEqual(mocked_tradfi.call_args.kwargs["required_kline_count"], 168)
-
-    def test_active3_candidate_screening_uses_tradfi_screener(self):
-        with patch(
-            "src.strategy.portfolio_strategy.screen_active_tradfi_symbol",
-            return_value={
-                "metadata": {"screening_mode": "tradfi"},
-                "selection": {
-                    "symbol": "GCUSDT",
-                    "screening_decision": "LONG",
-                    "screening_direction": "up",
-                    "selected": {"symbol": "GCUSDT", "screening_decision": "LONG", "screening_direction": "up"},
-                },
-            },
-        ) as mocked_tradfi:
-            candidate = portfolio_strategy._screen_active_candidate(
-                slot=_active3_slot(),
-                config=_config(),
-                excluded_symbols=["CLUSDT"],
-            )
-
-        self.assertEqual(candidate["symbol"], "GCUSDT")
-        self.assertEqual(candidate["screening_decision"], "LONG")
-        mocked_tradfi.assert_called_once()
 
     def test_prompt_market_context_fetches_padding_and_serializes_requested_count(self):
         raw_klines = [[index, "0", "0", "0", str(float(index + 1))] for index in range(170)]
@@ -321,48 +251,43 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertEqual(result["cycle_dir"], temp_dir)
         self.assertTrue(artifact_exists)
 
-    def test_active_region_restriction_records_runtime_symbol_ban_for_next_slot(self):
+    def test_active_region_restriction_records_runtime_symbol_ban_for_next_cycle(self):
         slot1 = _active_slot()
-        slot2 = _active2_slot()
         seen_bans = []
 
         def run_active_slot(**kwargs):
             seen_bans.append(tuple(kwargs.get("runtime_banned_symbols") or ()))
             slot = kwargs["slot"]
             slot_state = kwargs["slot_state"]
-            if slot.slot_id == "active_1":
-                slot_result = portfolio_strategy._slot_result_base(slot, "SKHYNIXUSDT")
-                slot_result.update(
-                    {
+            slot_result = portfolio_strategy._slot_result_base(slot, "SKHYNIXUSDT")
+            slot_result.update(
+                {
+                    "success": False,
+                    "action": "entry_order_failed",
+                    "screening_triggered": True,
+                    "screening_decision": "LONG",
+                    "execution": {
                         "success": False,
                         "action": "entry_order_failed",
-                        "screening_triggered": True,
-                        "screening_decision": "LONG",
-                        "execution": {
-                            "success": False,
-                            "action": "entry_order_failed",
-                            "order_error_code": -4412,
-                            "order_error_message": "not available in your region",
-                            "symbol_ban": {
-                                "symbol": "SKHYNIXUSDT",
-                                "reason": "binance_region_restricted",
-                                "source": "entry_order",
-                                "error_code": -4412,
-                                "error_message": "not available in your region",
-                            },
+                        "order_error_code": -4412,
+                        "order_error_message": "not available in your region",
+                        "symbol_ban": {
+                            "symbol": "SKHYNIXUSDT",
+                            "reason": "binance_region_restricted",
+                            "source": "entry_order",
+                            "error_code": -4412,
+                            "error_message": "not available in your region",
                         },
-                    }
-                )
-                return slot_result, slot_state, "SKHYNIXUSDT"
-            slot_result = portfolio_strategy._slot_result_base(slot, None)
-            slot_result.update({"success": True, "action": "waiting_for_active_candidate"})
-            return slot_result, slot_state, None
+                    },
+                }
+            )
+            return slot_result, slot_state, "SKHYNIXUSDT"
 
         with tempfile.TemporaryDirectory() as temp_dir, patch(
             "src.strategy.portfolio_strategy._load_strategy_config", return_value=_config()
         ), patch(
             "src.strategy.portfolio_strategy._build_portfolio_slots",
-            return_value=[slot1, slot2],
+            return_value=[slot1],
         ), patch(
             "src.strategy.portfolio_strategy.get_binance_credentials", return_value=("key", "secret")
         ), patch(
@@ -383,8 +308,8 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertEqual(ban["reason"], "binance_region_restricted")
         self.assertEqual(ban["last_seen_at"], "1970-01-01T00:00:02Z")
         self.assertEqual(ban["event_count"], 1)
-        self.assertEqual(seen_bans[0], ())
-        self.assertIn("SKHYNIXUSDT", seen_bans[1])
+        self.assertEqual(seen_bans, [()])
+        self.assertIn("SKHYNIXUSDT", portfolio_strategy._runtime_banned_symbols(result["state_update"]))
 
     def test_slot_exception_is_captured_and_following_slots_continue(self):
         passive_slot = _passive_slot()
@@ -1002,9 +927,9 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertEqual([event_name for event_name, _ in notifications], ["active_screening_after"])
 
     def test_active_mode_change_triggers_immediate_tradfi_rank_review(self):
-        slot = _active3_slot()
+        slot = _active_slot()
         slot_state = {
-            "slot_id": "active_3",
+            "slot_id": "active_1",
             "kind": "active",
             "symbol": "BNBUSDT",
             "last_ai_decision": "LONG",

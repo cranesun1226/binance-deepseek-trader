@@ -1,8 +1,8 @@
 # Binance DeepSeek Trader
 
-DeepSeek-assisted eight-slot Binance USDT-M futures trading bot.
+DeepSeek-assisted four-slot Binance USDT-M futures trading bot.
 
-This project runs an eight-slot portfolio loop across four fixed 2x-leverage passive markets and four dynamically screened 2x-leverage TradFi active markets. Passive slots are evaluated one symbol at a time by DeepSeek using `deepseek-v4-flash` with `max` reasoning effort. Active slots use screener-selected TradFi symbols and the screening window's close-price direction; after entry, the 24h active review compares the current fixed-direction position against a new fixed-direction TradFi candidate through DeepSeek before deciding whether to keep or switch.
+This project runs a four-slot portfolio loop across three fixed 2x-leverage passive markets and one dynamically screened 2x-leverage TradFi active market. Passive slots are evaluated one symbol at a time by DeepSeek using `deepseek-v4-flash` with `max` reasoning effort. The active slot uses a screener-selected TradFi symbol and the screening window's close-price direction; after entry, the 24h active review compares the current fixed-direction position against a new fixed-direction TradFi candidate through DeepSeek before deciding whether to keep or switch.
 
 > This software is for research and automation experiments. It is not financial advice. Futures trading can lose money quickly, and live mode sends real Binance Futures orders.
 
@@ -14,12 +14,12 @@ This project runs an eight-slot portfolio loop across four fixed 2x-leverage pas
   - 기본 모델: `deepseek-v4-flash`
   - reasoning effort: `max` (`xhigh` legacy values are normalized to `max`; `low`/`medium` map to `high`)
   - DeepSeek JSON Output 응답을 로컬에서 검증해 `LONG` 또는 `SHORT`만 허용
-- 8개 슬롯 포트폴리오
-  - Passive: `CLUSDT`, `XAUUSDT`, `BTCUSDT`, `ETHUSDT`
-  - Active 1, 2, 3, 4: 168개 종가 range volatility가 가장 큰 TradFi USDT-M perpetual, 종가 구간 방향으로 LONG/SHORT 결정
+- 4개 슬롯 포트폴리오
+  - Passive: `CLUSDT`, `BTCUSDT`, `XAUUSDT`
+  - Active 1: 168개 종가 range volatility가 가장 큰 TradFi USDT-M perpetual, 종가 구간 방향으로 LONG/SHORT 결정
 - 자산 배분
-  - Passive 각 12.5%
-  - Active 각 12.5%
+  - Passive 각 25%
+  - Active slot 25%
   - 기본 총 투입률 99%, passive 2x / active 2x 레버리지
 - 리스크 관리
   - 각 포지션 진입가 기준 4% stop loss 동기화
@@ -36,7 +36,7 @@ This project runs an eight-slot portfolio loop across four fixed 2x-leverage pas
 
 ### 실제 구동해도 되나?
 
-실제 구동 전에는 전체 8슬롯 사이클, passive DeepSeek 판단, active screener 방향 판단, Telegram 전송, 주문 수량 계산까지 live-data dry-run으로 다시 확인하세요. 다만 실제 구동 전에는 아래 체크리스트를 반드시 확인하세요.
+실제 구동 전에는 전체 4슬롯 사이클, passive DeepSeek 판단, active screener 방향 판단, Telegram 전송, 주문 수량 계산까지 live-data dry-run으로 다시 확인하세요. 다만 실제 구동 전에는 아래 체크리스트를 반드시 확인하세요.
 
 - Binance 계좌를 자동화 전용으로 분리했는지 확인
 - 기존 수동 포지션이 있어도 자동 청산되어도 괜찮은 계좌인지 확인
@@ -52,7 +52,7 @@ Passive LLM에는 한 번에 한 종목의 `symbol`, 현재 `reference_price`, �
 
 ### Active 스크리닝과 리밸런싱
 
-Active 1, 2, 3, 4는 모두 TradFi USDT-M perpetual만 대상으로 합니다. passive 심볼과 이미 관리 중인 심볼은 제외하며, 앞선 active 슬롯이 선택한 심볼도 뒤 슬롯에서 제외됩니다. 같은 active 유니버스의 현재 또는 직전 심볼도 제외하므로, 네 active 슬롯은 TradFi 후보를 서로 중복 없이 나눠 갖습니다.
+Active 1은 TradFi USDT-M perpetual만 대상으로 합니다. passive 심볼, 이미 관리 중인 심볼, 런타임에서 차단된 심볼, 그리고 active 슬롯의 현재 또는 직전 심볼을 제외합니다.
 
 각 후보는 `ai_prompt_timeframe`의 `ai_prompt_candle_count`개 종가를 가져와 `abs(last_close-first_close)/((last_close+first_close)/2)`로 계산한 `close_range_volatility`가 큰 순서로 선정합니다. 기본값은 168개의 1시간봉 종가입니다. Active 방향은 같은 종가 구간의 `last_close > first_close`이면 `LONG`, `last_close < first_close`이면 `SHORT`입니다. 보합 후보는 active 진입 후보에서 제외됩니다. Active 포지션이 열린 뒤에는 1% 트리거로 재스크리닝하지 않으며, `active_rescreen_interval_hours` 기본 24시간마다 기존 포지션과 신규 TradFi 후보를 DeepSeek 리밸런서가 비교합니다. 이 리밸런서에는 두 종목의 fixed LONG/SHORT 방향, reference price, 168개 종가 데이터가 같은 형식으로 전달되며, 어떤 종목이 현재 포지션인지는 전달하지 않습니다. DeepSeek가 기존 심볼을 선택하면 유지하고, 신규 후보를 선택하면 기존 포지션을 닫은 뒤 새 후보 방향으로 교체합니다. 랭킹 전에 Binance가 최신으로 반환한 2개의 1시간봉 high/low range를 검사하며, 둘 중 하나라도 4%를 넘으면 후보에서 제외합니다. 이 최신 2개에는 반드시 현재 진행 중인 1시간봉과 그 직전 1시간봉이 포함됩니다. 완전히 닫힌 봉 2개만 보는 방식이 아닙니다.
 
@@ -101,12 +101,11 @@ stop_loss_pct: 0.04
 active_rescreen_interval_hours: 24
 passive_symbols:
   - CLUSDT
-  - XAUUSDT
   - BTCUSDT
-  - ETHUSDT
+  - XAUUSDT
 # Active candidates are ranked by close_range_volatility over
-# ai_prompt_candle_count closes on ai_prompt_timeframe. All active slots
-# screen TradFi candidates only. Active direction is LONG when last_close >
+# ai_prompt_candle_count closes on ai_prompt_timeframe. The active slot
+# screens TradFi candidates only. Active direction is LONG when last_close >
 # first_close and SHORT when last_close < first_close. The 24h active review
 # asks DeepSeek to select between the current fixed-direction position and a
 # new fixed-direction TradFi candidate.
@@ -210,7 +209,7 @@ python -m py_compile main.py src/ai/deepseek_trader.py src/ai/deepseek_rebalance
 │   │   └── telegram.py
 │   └── strategy/
 │       ├── active_screener.py      # TradFi active market screening
-│       ├── portfolio_strategy.py   # Eight-slot portfolio state machine
+│       ├── portfolio_strategy.py   # Four-slot portfolio state machine
 │       ├── runtime_config.py
 │       └── scheduler.py
 └── tests/
@@ -232,17 +231,17 @@ python -m py_compile main.py src/ai/deepseek_trader.py src/ai/deepseek_rebalance
   - Default model: `deepseek-v4-flash`
   - Reasoning effort: `max` (`xhigh` legacy values are normalized to `max`; `low`/`medium` map to `high`)
   - DeepSeek JSON Output is locally validated to accept only `LONG` or `SHORT`
-- Eight-slot portfolio
-  - Passive: `CLUSDT`, `XAUUSDT`, `BTCUSDT`, `ETHUSDT`
-  - Active 1, 2, 3, and 4: TradFi USDT-M perpetuals with the largest 168-close range volatility, LONG/SHORT from the close-window direction
+- Four-slot portfolio
+  - Passive: `CLUSDT`, `BTCUSDT`, `XAUUSDT`
+  - Active 1: TradFi USDT-M perpetual with the largest 168-close range volatility, LONG/SHORT from the close-window direction
 - Allocation
-  - 12.5% per passive slot
-  - 12.5% per active slot
+  - 25% per passive slot
+  - 25% for the active slot
   - 99% default capital usage, 2x passive leverage and 2x active leverage
 - Risk management
   - Native stop loss synchronized at 4% from entry price
   - Passive slots re-evaluate after a ±1% move from the last decision anchor
-  - Active slots ignore the 1% trigger and every 24h ask DeepSeek to compare the current fixed-direction position with a new fixed-direction TradFi candidate
+  - The active slot ignores the 1% trigger and every 24h asks DeepSeek to compare the current fixed-direction position with a new fixed-direction TradFi candidate
   - Passive slots rebalance toward target slot weights
   - Designed for a dedicated automation account: unmanaged manual positions may be closed automatically
 - Notifications
@@ -254,7 +253,7 @@ python -m py_compile main.py src/ai/deepseek_trader.py src/ai/deepseek_rebalance
 
 ### Can I Run It Live?
 
-Before running live, re-run the live-data dry run for the full eight-slot cycle, including passive DeepSeek decisions, active screener direction decisions, Telegram delivery, and order quantity planning. Then complete this checklist:
+Before running live, re-run the live-data dry run for the full four-slot cycle, including passive DeepSeek decisions, active screener direction decisions, Telegram delivery, and order quantity planning. Then complete this checklist:
 
 - Use a dedicated Binance Futures automation account
 - Confirm unmanaged/manual positions may be closed automatically
@@ -270,7 +269,7 @@ The passive LLM receives only one symbol at a time: `symbol`, live `reference_pr
 
 ### Active Screening
 
-Active 1, Active 2, Active 3, and Active 4 all screen TradFi USDT-M perpetuals only. Passive symbols, already-managed symbols, symbols selected by earlier active slots in the same cycle, and each active slot's current or immediately previous symbol are excluded. This keeps the four active slots from selecting duplicate TradFi candidates.
+Active 1 screens TradFi USDT-M perpetuals only. Passive symbols, already-managed symbols, runtime-banned symbols, and the active slot's current or immediately previous symbol are excluded.
 
 For each candidate, the screener fetches `ai_prompt_candle_count` closes on `ai_prompt_timeframe` and ranks by `close_range_volatility = abs(last_close-first_close)/((last_close+first_close)/2)`, highest first. The default is 168 recent 1h closes. Active direction comes from the same close window: `LONG` when `last_close > first_close`, and `SHORT` when `last_close < first_close`. Flat candidates are excluded from active entries. After an active position opens, the slot does not re-screen on the 1% trigger; instead, every `active_rescreen_interval_hours` hours, default 24h, it compares the current fixed-direction position against a new fixed-direction TradFi candidate through `src/ai/deepseek_rebalancer.py`. The rebalancer receives both symbols in the same candidate shape with reference price and 168 closes, but it is not told which symbol is the current position. If DeepSeek selects the current symbol, the slot keeps the position; if it selects the new candidate, the old position is closed and the new candidate is opened in the screener direction. Before ranking, the screener checks the high/low range of the latest two 1h klines returned by Binance and excludes a candidate if either one exceeds 4%. These latest two klines intentionally include the currently forming 1h candle and the immediately preceding candle; the filter does not use only fully closed candles.
 
@@ -319,12 +318,11 @@ stop_loss_pct: 0.04
 active_rescreen_interval_hours: 24
 passive_symbols:
   - CLUSDT
-  - XAUUSDT
   - BTCUSDT
-  - ETHUSDT
+  - XAUUSDT
 # Active candidates are ranked by close_range_volatility over
-# ai_prompt_candle_count closes on ai_prompt_timeframe. All active slots
-# screen TradFi candidates only. Active direction is LONG when last_close >
+# ai_prompt_candle_count closes on ai_prompt_timeframe. The active slot
+# screens TradFi candidates only. Active direction is LONG when last_close >
 # first_close and SHORT when last_close < first_close. The 24h active review
 # asks DeepSeek to select between the current fixed-direction position and a
 # new fixed-direction TradFi candidate.
@@ -428,7 +426,7 @@ python -m py_compile main.py src/ai/deepseek_trader.py src/ai/deepseek_rebalance
 │   │   └── telegram.py
 │   └── strategy/
 │       ├── active_screener.py      # TradFi active market screening
-│       ├── portfolio_strategy.py   # Eight-slot portfolio state machine
+│       ├── portfolio_strategy.py   # Four-slot portfolio state machine
 │       ├── runtime_config.py
 │       └── scheduler.py
 └── tests/

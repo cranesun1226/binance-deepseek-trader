@@ -1,4 +1,4 @@
-"""Eight-slot Binance futures portfolio runtime powered by DeepSeek."""
+"""Four-slot Binance futures portfolio runtime powered by DeepSeek."""
 
 from __future__ import annotations
 
@@ -72,10 +72,8 @@ MANAGED_DECISIONS = {"LONG", "SHORT"}
 ACTIVE_SCREENING_MODES = {"crypto", "tradfi"}
 LEGACY_ACTIVE_SCREENING_MODES_BY_SLOT_ID = {
     "active_1": "crypto",
-    "active_2": "tradfi",
-    "active_3": "crypto",
-    "active_4": "tradfi",
 }
+PORTFOLIO_SLOT_TARGET_MARGIN_RATIO = 0.25
 MATERIAL_POSITION_RECORD_ACTIONS = {
     "active_rebalance_review_failed_position_kept",
     "active_rebalance_position_kept",
@@ -264,8 +262,8 @@ def _normalize_passive_symbols(value: Any) -> list[str]:
         symbol = _normalize_symbol(raw_symbol)
         if symbol and symbol not in symbols:
             symbols.append(symbol)
-    if len(symbols) != 4:
-        logger.warning("passive_symbols must contain 4 symbols; using defaults")
+    if len(symbols) != 3:
+        logger.warning("passive_symbols must contain 3 symbols; using defaults")
         return list(DEFAULT_PASSIVE_SYMBOLS)
     return symbols
 
@@ -333,48 +331,25 @@ def _load_strategy_config() -> Dict[str, Any]:
 
 def _build_portfolio_slots(config: Dict[str, Any]) -> list[PortfolioSlot]:
     passive_symbols = list(config["passive_symbols"])
-    passive_labels = ["passive_cl", "passive_xau", "passive_btc", "passive_eth"]
+    passive_labels = ["passive_cl", "passive_btc", "passive_xau"]
     slots = [
         PortfolioSlot(
             slot_id=slot_id,
             label=symbol,
             kind="passive",
             symbol=symbol,
-            target_margin_ratio=0.125,
+            target_margin_ratio=PORTFOLIO_SLOT_TARGET_MARGIN_RATIO,
         )
         for slot_id, symbol in zip(passive_labels, passive_symbols)
     ]
-    slots.extend(
-        [
-            PortfolioSlot(
-                slot_id="active_1",
-                label="active1",
-                kind="active",
-                target_margin_ratio=0.125,
-                active_screening_mode="tradfi",
-            ),
-            PortfolioSlot(
-                slot_id="active_2",
-                label="active2",
-                kind="active",
-                target_margin_ratio=0.125,
-                active_screening_mode="tradfi",
-            ),
-            PortfolioSlot(
-                slot_id="active_3",
-                label="active3",
-                kind="active",
-                target_margin_ratio=0.125,
-                active_screening_mode="tradfi",
-            ),
-            PortfolioSlot(
-                slot_id="active_4",
-                label="active4",
-                kind="active",
-                target_margin_ratio=0.125,
-                active_screening_mode="tradfi",
-            ),
-        ]
+    slots.append(
+        PortfolioSlot(
+            slot_id="active_1",
+            label="active1",
+            kind="active",
+            target_margin_ratio=PORTFOLIO_SLOT_TARGET_MARGIN_RATIO,
+            active_screening_mode="tradfi",
+        )
     )
     return slots
 
@@ -2990,7 +2965,7 @@ def run_portfolio_cycle(
     as_of_ms: Optional[int] = None,
     notification_callback: NotificationCallback = None,
 ) -> Dict[str, Any]:
-    """Run one full eight-slot portfolio cycle and return a serializable result payload."""
+    """Run one full four-slot portfolio cycle and return a serializable result payload."""
     config = _load_strategy_config()
     slots = _build_portfolio_slots(config)
     resolved_as_of_ms = _resolve_as_of_ms(as_of_ms)
