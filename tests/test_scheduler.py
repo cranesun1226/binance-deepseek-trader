@@ -85,7 +85,14 @@ class SchedulerTests(unittest.TestCase):
             "trigger_reason": "active_candidate_selected",
             "screening_decision": "LONG",
             "decision": "LONG",
-            "decision_source": "active_screener",
+            "ai_decision": "LONG",
+            "decision_source": "deepseek_trader",
+            "ai_analysis": {
+                "decision": {
+                    "decision": "LONG",
+                    "reason": "DeepSeek confirms the active setup.",
+                }
+            },
             "action": "opened_new_position",
             "success": True,
             "execution": {"action": "opened_new_position", "side": "Buy", "qty": "3"},

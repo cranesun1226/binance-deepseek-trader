@@ -144,8 +144,8 @@ def main() -> int:
         )
 
     # Patch private/account-mutating Binance calls only. Public market data,
-    # passive-slot DeepSeek calls, active screening, and Telegram still run
-    # against live external services.
+    # passive and active DeepSeek calls, active screening, and Telegram still
+    # run against live external services.
     with patch("src.strategy.portfolio_strategy.get_binance_credentials", return_value=("dry_run", "dry_run")), patch(
         "src.strategy.portfolio_strategy.get_account_overview", side_effect=_fake_account_overview
     ), patch(

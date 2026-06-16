@@ -39,7 +39,7 @@ TRIGGER_REASON_LABELS = {
     "price_distance_reached": "Price distance reached",
     "waiting_for_next_price_trigger": "Waiting for next price level",
     "active_candidate_selected": "Active candidate selected",
-    "active_rank_review_due": "Active 24h rank review due",
+    "active_rank_review_due": "Active 24h DeepSeek review due",
     "active_screening_mode_changed": "Active screening mode changed",
 }
 
@@ -50,26 +50,22 @@ ACTION_LABELS = {
     "kept_position_by_ai": "Position kept by AI",
     "kept_position_by_screening": "Position kept by screening",
     "kept_active_position_until_stop_loss": "Active position held until stop-loss",
-    "active_rebalance_review_failed_position_kept": "Active rebalance review failed, position kept",
-    "active_rebalance_selection_failed_position_kept": "Active rebalance selection failed, position kept",
-    "active_rebalance_position_kept": "Active position kept by DeepSeek rebalance",
-    "active_rank_review_failed_position_kept": "Active rank review failed, position kept",
-    "active_rank_review_position_kept": "Active position kept by rank",
+    "active_rank_review_failed_position_kept": "Active DeepSeek review failed, position kept",
+    "active_rank_review_position_kept": "Active position kept after DeepSeek review",
+    "active_ai_decision_failed": "Active DeepSeek direction failed",
     "opened_new_position": "Opened new position",
-    "switched_active_position_by_rebalancer": "Switched active position by DeepSeek rebalance",
-    "switched_active_position_by_rank": "Switched active position by rank",
+    "switched_active_position_by_deepseek": "Switched active position by DeepSeek direction",
     "reversed_position": "Reversed position",
     "increased_position": "Increased position",
     "reduced_position": "Reduced position",
     "closed_position": "Closed position",
     "screener_selection_failed": "Active screener failed",
-    "candidate_screening_direction_unavailable": "Candidate screening direction unavailable",
     "ai_decision_failed": "AI decision failed",
     "slot_execution_failed": "Slot execution failed",
-    "switch_close_failed": "Active rank switch close failed",
+    "switch_close_failed": "Active DeepSeek switch close failed",
     "entry_order_failed": "Entry order failed",
     "stop_loss_sync_failed": "Stop-loss sync failed",
-    "active_rank_switch_entry_failed": "Active rank switch entry failed",
+    "active_rank_switch_entry_failed": "Active DeepSeek switch entry failed",
     "reference_price_unavailable": "Reference price unavailable",
 }
 
@@ -364,19 +360,8 @@ class TradingScheduler:
         selected = selection.get("selected") if isinstance(selection.get("selected"), dict) else {}
         execution = payload.get("execution") if isinstance(payload.get("execution"), dict) else {}
         close_result = payload.get("close") if isinstance(payload.get("close"), dict) else {}
-        rebalance_analysis = (
-            payload.get("active_rebalance_analysis")
-            if isinstance(payload.get("active_rebalance_analysis"), dict)
-            else {}
-        )
-        rebalance_decision = (
-            payload.get("active_rebalance_selection")
-            if isinstance(payload.get("active_rebalance_selection"), dict)
-            else rebalance_analysis.get("decision")
-            if isinstance(rebalance_analysis.get("decision"), dict)
-            else {}
-        )
-        rebalance_reason = self._decision_reason_text(rebalance_analysis)
+        ai_analysis = payload.get("ai_analysis") if isinstance(payload.get("ai_analysis"), dict) else {}
+        ai_reason = self._decision_reason_text(ai_analysis)
         sections: list[tuple[str, Sequence[str], bool]] = [
             (
                 self._format_html_title("Screening"),
@@ -390,6 +375,9 @@ class TradingScheduler:
                     self._format_html_line("Candidate", payload.get("candidate_symbol"), code=True)
                     if payload.get("candidate_symbol")
                     else "",
+                    self._format_html_line("Screen Dir", payload.get("screening_decision"), code=True)
+                    if payload.get("screening_decision")
+                    else "",
                     self._format_html_line("Rank Metric", selection.get("ranking_metric"), code=True),
                     self._format_html_line("Range", self._format_float(selected.get("close_range_volatility_pct"), 2) + "%"),
                     self._format_html_line("Net Return", self._format_float(selected.get("net_return_pct"), 2) + "%"),
@@ -397,22 +385,11 @@ class TradingScheduler:
                 True,
             ),
             (
-                self._format_html_title("Rebalancer"),
+                self._format_html_title("AI Direction"),
                 [
-                    self._format_html_line("Selected", payload.get("selected_symbol"), code=True)
-                    if payload.get("selected_symbol")
-                    else "",
-                    self._format_html_line("Reason", rebalance_reason) if rebalance_reason else "",
-                    self._format_html_line("Model", rebalance_analysis.get("model"), code=True)
-                    if rebalance_analysis
-                    else "",
-                    self._format_html_line(
-                        "Raw Selected",
-                        rebalance_decision.get("selected_symbol") if isinstance(rebalance_decision, dict) else None,
-                        code=True,
-                    )
-                    if isinstance(rebalance_decision, dict) and rebalance_decision.get("selected_symbol")
-                    else "",
+                    self._format_html_line("Decision", payload.get("ai_decision") or payload.get("decision"), bold=True),
+                    self._format_html_line("Reason", ai_reason) if ai_reason else "",
+                    self._format_html_line("Model", ai_analysis.get("model"), code=True) if ai_analysis else "",
                 ],
                 False,
             ),
@@ -448,7 +425,11 @@ class TradingScheduler:
             title=self._format_html_title("Active Screening Decision"),
             summary_lines=[
                 self._format_html_line("Symbol", payload.get("symbol"), code=True),
-                self._format_html_line("Decision", payload.get("screening_decision") or payload.get("decision"), bold=True),
+                self._format_html_line(
+                    "Decision",
+                    payload.get("ai_decision") or payload.get("decision") or payload.get("screening_decision"),
+                    bold=True,
+                ),
                 self._format_html_line("Price", self._format_usdt(payload.get("current_price"))),
                 self._format_html_line("Trigger", self._translate_trigger_reason(payload.get("trigger_reason"))),
             ],
@@ -518,11 +499,13 @@ class TradingScheduler:
         change_pct = (change / first_price) * 100.0 if first_price > 0.0 else 0.0
         timeframe = str(payload.get("ai_prompt_timeframe") or "1h").strip() or "1h"
         change_text = f"{change:+,.2f} USDT ({change_pct:+.2f}%)"
-        title = (
-            "Active Screening Close Prices Line Chart"
-            if str(payload.get("decision_source") or "").strip() == "active_screener"
-            else "AI Close Prices Line Chart"
+        is_active_screening = str(payload.get("slot_id") or "").startswith("active") and (
+            bool(payload.get("candidate_symbol"))
+            or payload.get("screening_decision") is not None
+            or str(payload.get("trigger_reason") or "").startswith("active_")
         )
+        title = "Active Screening Close Prices Line Chart" if is_active_screening else "AI Close Prices Line Chart"
+        decision = payload.get("ai_decision") or payload.get("decision") or payload.get("screening_decision") or "None"
         return "\n".join(
             [
                 f"<b>{title}</b>",
@@ -530,7 +513,7 @@ class TradingScheduler:
                 self._format_html_line("Symbol", payload.get("symbol"), code=True),
                 self._format_html_line("Timeframe", timeframe, code=True),
                 self._format_html_line("Count", len(close_prices)),
-                self._format_html_line("Decision", payload.get("decision") or "None", bold=True),
+                self._format_html_line("Decision", decision, bold=True),
                 self._format_html_line("First", self._format_usdt(first_price)),
                 self._format_html_line("Latest", self._format_usdt(latest_price)),
                 self._format_html_line("Change", change_text),
@@ -601,7 +584,7 @@ class TradingScheduler:
                         "sent": sent,
                         "chart_sent": chart_sent,
                         "symbol": payload.get("symbol"),
-                        "decision": payload.get("screening_decision") or payload.get("decision"),
+                        "decision": payload.get("ai_decision") or payload.get("decision") or payload.get("screening_decision"),
                     }
                 ),
             )

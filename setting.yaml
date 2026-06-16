@@ -39,15 +39,19 @@ passive_symbols:
 # Active candidates are ranked by close_range_volatility:
 # abs(last_close-first_close)/((last_close+first_close)/2), using
 # ai_prompt_candle_count closes on ai_prompt_timeframe.
-# Active direction is LONG when last_close > first_close and SHORT when
-# last_close < first_close. Flat candidates are skipped.
+# The screener records LONG when last_close > first_close and SHORT when
+# last_close < first_close; this screening direction is metadata only. Flat
+# candidates are skipped, and DeepSeek trader decides the actual LONG/SHORT
+# direction before every active entry or 24h review execution.
 # When the active slot needs a new symbol, it excludes its current and
 # immediately previous symbols from the same TradFi active universe.
 # Once an active position is open, it is held until the fixed 4% stop loss,
-# external/manual position cleanup, or the 24h review compares the current
-# position against a new TradFi candidate through DeepSeek and selects the
-# replacement candidate. The active slot does not use the 1% decision trigger
-# while holding a position.
+# external/manual position cleanup, or the 24h review re-ranks TradFi
+# candidates while allowing the current symbol. If the current symbol remains
+# top-ranked, DeepSeek trader reviews its direction and rebalances/reverses as
+# needed; if a new symbol is top-ranked, the current position is closed and the
+# new symbol opens in DeepSeek trader's direction. The active slot does not use
+# the 1% decision trigger while holding a position.
 # Before ranking, the latest returned 2 klines are filtered by high/low range
 # change <= 4%; this intentionally includes the currently forming 1h candle
 # and the immediately preceding candle, not only fully closed candles.
