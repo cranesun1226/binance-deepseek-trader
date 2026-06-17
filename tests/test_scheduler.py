@@ -49,7 +49,7 @@ class SchedulerTests(unittest.TestCase):
         scheduler = TradingScheduler()
         message = scheduler._build_ai_cycle_after_message(
             {
-                "slot_id": "passive_1",
+                "slot_id": "active_1",
                 "symbol": "BTCUSDT",
                 "decision": "LONG",
                 "position": None,
@@ -116,10 +116,14 @@ class SchedulerTests(unittest.TestCase):
             "screener": {
                 "metadata": {"screening_mode": "tradfi"},
                 "selection": {
-                    "ranking_metric": "close_range_volatility",
+                    "ranking_metric": "trend_score",
                     "selected": {
-                        "close_range_volatility_pct": 6.2,
+                        "trend_score": 0.91,
+                        "r_squared": 0.99,
+                        "directional_consistency": 0.97,
                         "net_return_pct": 6.1,
+                        "recent_kline_min_low": 52.0,
+                        "recent_kline_max_high": 55.5,
                     },
                 },
             },

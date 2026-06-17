@@ -3,9 +3,9 @@
 # Trading loop
 cycle_interval_seconds: 60
 
-# Passive decision trigger: re-evaluate passive slots when price moves +/-
-# this percent from that slot's last decision anchor. Active slots ignore this
-# price trigger while a position is open.
+# Active slots use this price trigger for current-symbol DeepSeek direction
+# reviews while open. Universe re-screening still follows
+# active_rescreen_interval_hours.
 trigger_pct_usdt: 1.0
 
 # Prompt input: 168 recent 1h close prices, with the newest value aligned
@@ -20,42 +20,29 @@ deepseek_max_tokens: 8192
 deepseek_timeout_seconds: 300.0
 
 # Portfolio allocation
-# All 4 slots target 1/4 margin allocation. Passive fixed-symbol slots use
-# 2x leverage; the two active slots also use 2x leverage.
-passive_leverage: 2
+# Four active slots each target 1/4 margin allocation. Active 1/2/3 screen
+# TradFi USDT-M perpetuals; active 4 screens non-TradFi crypto USDT-M
+# perpetuals, giving the portfolio a 3:1 TradFi-to-crypto market split.
 active_leverage: 2
 capital_usage_ratio: 0.99
-rebalance_threshold_pct: 0.03
+rebalance_threshold_pct: 0.02
 stop_loss_pct: 0.04
 active_rescreen_interval_hours: 24
 
-# Passive slots are evaluated in this exact priority order.
-passive_symbols:
-  - CLUSDT
-  - BTCUSDT
-
-# The two active slots screen TradFi USDT perpetuals only.
-# Active candidates are ranked by close_range_volatility:
-# abs(last_close-first_close)/((last_close+first_close)/2), using
-# ai_prompt_candle_count closes on ai_prompt_timeframe.
-# The screener records LONG when last_close > first_close and SHORT when
-# last_close < first_close; this screening direction is metadata only. Flat
-# candidates are skipped, and DeepSeek trader decides the actual LONG/SHORT
-# direction before every active entry or 24h review execution.
-# When an active slot needs a new symbol, it excludes its current and
-# immediately previous symbols, plus the other active slot's current and
-# previous symbols, from the same TradFi active universe.
+# Active candidates are ranked by one-week trend quality over
+# ai_prompt_candle_count closes on ai_prompt_timeframe. The trend screener
+# records LONG or SHORT from the fitted log-price slope, scores direction
+# consistency with R-squared, efficiency, adverse excursion, and daily/weekly
+# consistency, and skips flat or inconsistent endpoint paths.
+#
+# Before ranking, the screener applies a directional 24-candle entry filter
+# against the live lookup price:
+# - LONG: min(low over latest 24 1h klines) >= live_price * 0.96
+# - SHORT: max(high over latest 24 1h klines) <= live_price * 1.04
+#
 # Once an active position is open, it is held until the fixed 4% stop loss,
-# external/manual position cleanup, or the 24h review re-ranks TradFi
-# candidates while allowing the current symbol. If the current symbol remains
-# top-ranked, DeepSeek trader reviews its direction and rebalances/reverses as
-# needed. If a new symbol is top-ranked, DeepSeek rebalancer first chooses
-# whether to keep the current symbol or switch to the new candidate; the
-# current position is only closed when the new candidate is selected. Active
-# slots do not use the 1% decision trigger while holding a position.
-# Before ranking, the latest returned 2 klines are filtered by high/low range
-# change <= 4%; this intentionally includes the currently forming 1h candle
-# and the immediately preceding candle, not only fully closed candles.
+# external/manual position cleanup, or the 24h review re-ranks candidates
+# while allowing the current symbol.
 
 # Binance public API stability knobs for active screening.
 screener_quote: USDT

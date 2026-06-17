@@ -214,6 +214,6 @@ def parse_klines(klines: Sequence[Any]) -> list[Dict[str, float]]:
 
 
 def parse_closed_klines(raw_klines: Sequence[Any], *, now_ms: Optional[int] = None) -> list[Dict[str, float]]:
-    """Compatibility shim that preserves the live inclusive candle set for callers using the legacy name."""
+    """Compatibility shim that preserves the live inclusive candle set for older callers."""
     del now_ms
     return parse_klines(raw_klines)

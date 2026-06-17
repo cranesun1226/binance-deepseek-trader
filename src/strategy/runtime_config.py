@@ -26,20 +26,15 @@ DEFAULT_DEEPSEEK_TIMEOUT_SECONDS = 300.0
 DEFAULT_AI_PROMPT_TIMEFRAME = "1h"
 DEFAULT_AI_PROMPT_CANDLE_COUNT = 168
 DEFAULT_TRIGGER_PCT_USDT = 1.0
-DEFAULT_FIXED_LEVERAGE = 1
-DEFAULT_PASSIVE_LEVERAGE = 2
 DEFAULT_ACTIVE_LEVERAGE = 2
 DEFAULT_CAPITAL_USAGE_RATIO = 0.99
-DEFAULT_REBALANCE_THRESHOLD_PCT = 0.03
+DEFAULT_REBALANCE_THRESHOLD_PCT = 0.02
 DEFAULT_ACTIVE_RESCREEN_INTERVAL_HOURS = 24.0
-DEFAULT_PASSIVE_SYMBOLS = ["CLUSDT", "BTCUSDT"]
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "project_name": "binance-deepseek-trader",
     "cycle_interval_seconds": 60,
     "trigger_pct_usdt": DEFAULT_TRIGGER_PCT_USDT,
-    "fixed_leverage": DEFAULT_FIXED_LEVERAGE,
-    "passive_leverage": DEFAULT_PASSIVE_LEVERAGE,
     "active_leverage": DEFAULT_ACTIVE_LEVERAGE,
     "stop_loss_pct": 0.04,
     "ai_prompt_timeframe": DEFAULT_AI_PROMPT_TIMEFRAME,
@@ -51,7 +46,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "deepseek_reasoning_effort": DEFAULT_DEEPSEEK_REASONING_EFFORT,
     "deepseek_max_tokens": DEFAULT_DEEPSEEK_MAX_TOKENS,
     "deepseek_timeout_seconds": DEFAULT_DEEPSEEK_TIMEOUT_SECONDS,
-    "passive_symbols": list(DEFAULT_PASSIVE_SYMBOLS),
     "screener_quote": "USDT",
     "screener_timeout": 30.0,
     "screener_retries": 3,

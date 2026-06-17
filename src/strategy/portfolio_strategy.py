@@ -36,7 +36,8 @@ from src.infra.env_loader import get_binance_credentials
 from src.infra.logger import format_log_details, get_logger
 from src.strategy.active_screener import (
     NoActiveCandidateError,
-    calculate_close_range_volatility_metrics,
+    calculate_trend_metrics,
+    screen_active_symbol,
     screen_active_tradfi_symbol,
 )
 from src.strategy.runtime_config import (
@@ -45,13 +46,10 @@ from src.strategy.runtime_config import (
     DEFAULT_ACTIVE_LEVERAGE,
     DEFAULT_ACTIVE_RESCREEN_INTERVAL_HOURS,
     DEFAULT_CAPITAL_USAGE_RATIO,
-    DEFAULT_FIXED_LEVERAGE,
-    DEFAULT_PASSIVE_LEVERAGE,
     DEFAULT_DEEPSEEK_MAX_TOKENS,
     DEFAULT_DEEPSEEK_MODEL,
     DEFAULT_DEEPSEEK_REASONING_EFFORT,
     DEFAULT_DEEPSEEK_TIMEOUT_SECONDS,
-    DEFAULT_PASSIVE_SYMBOLS,
     DEFAULT_REBALANCE_THRESHOLD_PCT,
     DEFAULT_TRIGGER_PCT_USDT,
     load_runtime_config,
@@ -70,13 +68,16 @@ SYMBOL_BAN_SCOPE_ACTIVE_SCREENER = "active_screener"
 TRIGGER_PRICE_DIGITS = 8
 MANAGED_DECISIONS = {"LONG", "SHORT"}
 ACTIVE_SCREENING_MODES = {"crypto", "tradfi"}
-LEGACY_ACTIVE_SCREENING_MODES_BY_SLOT_ID = {
-    "active_1": "crypto",
-}
-LEGACY_PASSIVE_XAU_SLOT_ID = "passive_xau"
-MIGRATED_ACTIVE_SLOT_ID = "active_2"
+ACTIVE_SLOT_SPECS = (
+    ("active_1", "active1", "tradfi"),
+    ("active_2", "active2", "tradfi"),
+    ("active_3", "active3", "tradfi"),
+    ("active_4", "active4", "crypto"),
+)
 PORTFOLIO_SLOT_TARGET_MARGIN_RATIO = 0.25
 MATERIAL_POSITION_RECORD_ACTIONS = {
+    "active_price_review_failed_position_kept",
+    "active_price_review_position_kept",
     "active_rebalance_review_failed_position_kept",
     "active_rebalance_position_kept",
     "active_rebalance_selection_failed_position_kept",
@@ -257,35 +258,13 @@ def _normalize_reasoning_effort(value: Any) -> str:
     return DEFAULT_DEEPSEEK_REASONING_EFFORT
 
 
-def _normalize_passive_symbols(value: Any) -> list[str]:
-    raw_symbols = value if isinstance(value, (list, tuple)) else DEFAULT_PASSIVE_SYMBOLS
-    symbols: list[str] = []
-    for raw_symbol in raw_symbols:
-        symbol = _normalize_symbol(raw_symbol)
-        if symbol and symbol not in symbols:
-            symbols.append(symbol)
-    if len(symbols) != 2:
-        logger.warning("passive_symbols must contain 2 symbols; using defaults")
-        return list(DEFAULT_PASSIVE_SYMBOLS)
-    return symbols
-
-
 def _load_strategy_config() -> Dict[str, Any]:
     raw = load_runtime_config(CONFIG_PATH)
-    passive_symbols = _normalize_passive_symbols(raw.get("passive_symbols"))
     return {
         "cycle_interval_seconds": _normalize_positive_int(raw.get("cycle_interval_seconds", 60), 60),
         "trigger_pct_usdt": _normalize_trigger_percent(
             raw.get("trigger_pct_usdt", DEFAULT_TRIGGER_PCT_USDT),
             DEFAULT_TRIGGER_PCT_USDT,
-        ),
-        "fixed_leverage": _normalize_positive_int(
-            raw.get("fixed_leverage", DEFAULT_FIXED_LEVERAGE),
-            DEFAULT_FIXED_LEVERAGE,
-        ),
-        "passive_leverage": _normalize_positive_int(
-            raw.get("passive_leverage", DEFAULT_PASSIVE_LEVERAGE),
-            DEFAULT_PASSIVE_LEVERAGE,
         ),
         "active_leverage": _normalize_positive_int(
             raw.get("active_leverage", DEFAULT_ACTIVE_LEVERAGE),
@@ -323,7 +302,6 @@ def _load_strategy_config() -> Dict[str, Any]:
             raw.get("deepseek_timeout_seconds", DEFAULT_DEEPSEEK_TIMEOUT_SECONDS),
             DEFAULT_DEEPSEEK_TIMEOUT_SECONDS,
         ),
-        "passive_symbols": passive_symbols,
         "screener_quote": str(raw.get("screener_quote") or "USDT").strip().upper() or "USDT",
         "screener_timeout": _normalize_positive_float(raw.get("screener_timeout", 30.0), 30.0),
         "screener_retries": max(0, _safe_int(raw.get("screener_retries", 3), 3)),
@@ -332,45 +310,20 @@ def _load_strategy_config() -> Dict[str, Any]:
 
 
 def _build_portfolio_slots(config: Dict[str, Any]) -> list[PortfolioSlot]:
-    passive_symbols = list(config["passive_symbols"])
-    passive_labels = ["passive_cl", "passive_btc"]
-    slots = [
+    del config
+    return [
         PortfolioSlot(
             slot_id=slot_id,
-            label=symbol,
-            kind="passive",
-            symbol=symbol,
+            label=label,
+            kind="active",
             target_margin_ratio=PORTFOLIO_SLOT_TARGET_MARGIN_RATIO,
+            active_screening_mode=screening_mode,
         )
-        for slot_id, symbol in zip(passive_labels, passive_symbols)
+        for slot_id, label, screening_mode in ACTIVE_SLOT_SPECS
     ]
-    slots.append(
-        PortfolioSlot(
-            slot_id="active_1",
-            label="active1",
-            kind="active",
-            target_margin_ratio=PORTFOLIO_SLOT_TARGET_MARGIN_RATIO,
-            active_screening_mode="tradfi",
-        )
-    )
-    slots.append(
-        PortfolioSlot(
-            slot_id="active_2",
-            label="active2",
-            kind="active",
-            target_margin_ratio=PORTFOLIO_SLOT_TARGET_MARGIN_RATIO,
-            active_screening_mode="tradfi",
-        )
-    )
-    return slots
 
 
 def _leverage_for_slot(slot: PortfolioSlot, config: Dict[str, Any]) -> int:
-    if slot.kind == "passive":
-        return _normalize_positive_int(
-            config.get("passive_leverage", DEFAULT_PASSIVE_LEVERAGE),
-            DEFAULT_PASSIVE_LEVERAGE,
-        )
     if slot.kind == "active":
         return _normalize_positive_int(
             config.get("active_leverage", DEFAULT_ACTIVE_LEVERAGE),
@@ -762,7 +715,7 @@ def _empty_slot_state(slot: PortfolioSlot) -> Dict[str, Any]:
     state = {
         "slot_id": slot.slot_id,
         "kind": slot.kind,
-        "symbol": slot.symbol if slot.kind == "passive" else None,
+        "symbol": None,
         "last_ai_trigger_price": None,
         "last_ai_triggered_at": None,
         "last_ai_decision": None,
@@ -783,21 +736,10 @@ def _active_screening_mode(slot: PortfolioSlot) -> str:
     return _normalize_active_screening_mode_value(slot.active_screening_mode) or "tradfi"
 
 
-def _legacy_active_screening_mode(slot: PortfolioSlot) -> str:
-    return LEGACY_ACTIVE_SCREENING_MODES_BY_SLOT_ID.get(slot.slot_id, _active_screening_mode(slot))
-
-
 def _active_screening_mode_changed(slot: PortfolioSlot, slot_state: Dict[str, Any]) -> bool:
     if slot.kind != "active":
         return False
     persisted_mode = _normalize_active_screening_mode_value(slot_state.get("active_screening_mode"))
-    if persisted_mode is None and (
-        _normalize_symbol(slot_state.get("symbol"))
-        or _normalize_symbol(slot_state.get("previous_active_symbol"))
-        or str(slot_state.get("entered_at") or "").strip()
-        or _normalize_ai_decision(slot_state.get("last_ai_decision"))
-    ):
-        persisted_mode = _legacy_active_screening_mode(slot)
     if persisted_mode and persisted_mode != _active_screening_mode(slot):
         return True
     return bool(slot_state.get("active_screening_mode_changed"))
@@ -828,7 +770,7 @@ def _normalize_slot_state(slot: PortfolioSlot, raw_state: Any) -> Dict[str, Any]
         if slot.kind == "active":
             persisted_mode = _normalize_active_screening_mode_value(raw_state.get("active_screening_mode"))
             raw_previous_mode = _normalize_active_screening_mode_value(raw_state.get("previous_active_screening_mode"))
-            previous_active_mode = persisted_mode or raw_previous_mode or _legacy_active_screening_mode(slot)
+            previous_active_mode = persisted_mode or raw_previous_mode
             active_mode_changed = bool(
                 raw_state.get("active_screening_mode_changed")
                 or (previous_active_mode is not None and previous_active_mode != configured_active_mode)
@@ -847,8 +789,6 @@ def _normalize_slot_state(slot: PortfolioSlot, raw_state: Any) -> Dict[str, Any]
             state["previous_active_screening_mode"] = (
                 (raw_previous_mode or previous_active_mode) if active_mode_changed else None
             )
-    if slot.kind == "passive":
-        state["symbol"] = slot.symbol
     state["last_ai_decision"] = _normalize_ai_decision(state.get("last_ai_decision"))
     return state
 
@@ -881,54 +821,15 @@ def _active_recent_symbols_by_mode(
     return grouped
 
 
-def _migrate_legacy_passive_xau_state_to_active(raw_slots: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    existing_active = raw_slots.get(MIGRATED_ACTIVE_SLOT_ID)
-    if isinstance(existing_active, dict):
-        return None
-
-    legacy_state = raw_slots.get(LEGACY_PASSIVE_XAU_SLOT_ID)
-    if not isinstance(legacy_state, dict):
-        return None
-
-    symbol = _normalize_symbol(legacy_state.get("symbol"))
-    if not symbol:
-        return None
-
-    migrated: Dict[str, Any] = {
-        "slot_id": MIGRATED_ACTIVE_SLOT_ID,
-        "kind": "active",
-        "symbol": symbol,
-        "active_screening_mode": "tradfi",
-        "active_screening_mode_changed": True,
-        "previous_active_screening_mode": "tradfi",
-        "previous_active_symbol": None,
-        "entered_at": legacy_state.get("entered_at"),
-        "last_active_rank_checked_at": legacy_state.get("last_active_rank_checked_at"),
-    }
-    for key in (
-        "last_ai_trigger_price",
-        "last_ai_triggered_at",
-        "last_ai_decision",
-        "next_trigger_down",
-        "next_trigger_up",
-    ):
-        if key in legacy_state:
-            migrated[key] = legacy_state.get(key)
-    return migrated
-
-
 def _normalize_portfolio_state(previous_state: Optional[Dict[str, Any]], slots: Sequence[PortfolioSlot]) -> Dict[str, Any]:
     raw = dict(previous_state or {})
     raw_slots = raw.get("slots") if str(raw.get("version") or "") == STATE_VERSION else {}
     if not isinstance(raw_slots, dict):
         raw_slots = {}
-    migrated_active_state = _migrate_legacy_passive_xau_state_to_active(raw_slots)
     normalized_slots: dict[str, Dict[str, Any]] = {}
     reserved_symbols: set[str] = set()
     for slot in slots:
         raw_slot_state = raw_slots.get(slot.slot_id)
-        if slot.slot_id == MIGRATED_ACTIVE_SLOT_ID and not isinstance(raw_slot_state, dict):
-            raw_slot_state = migrated_active_state
         slot_state = _normalize_slot_state(slot, raw_slot_state)
         state_symbol = _normalize_symbol(slot_state.get("symbol"))
         if slot.kind == "active" and state_symbol in reserved_symbols:
@@ -1666,8 +1567,9 @@ def _screen_active_candidate(
     config: Dict[str, Any],
     excluded_symbols: Sequence[str],
 ) -> Dict[str, Any]:
-    del slot
-    screener_output = screen_active_tradfi_symbol(
+    screening_mode = _active_screening_mode(slot)
+    screener = screen_active_tradfi_symbol if screening_mode == "tradfi" else screen_active_symbol
+    screener_output = screener(
         excluded_symbols=excluded_symbols,
         quote=str(config["screener_quote"]),
         timeout=float(config["screener_timeout"]),
@@ -1743,7 +1645,7 @@ def _decision_from_position_or_state(
 
 
 def _active_rebalance_metrics(symbol: str, close_prices: Sequence[Any]) -> Dict[str, Any]:
-    metrics = calculate_close_range_volatility_metrics(symbol, close_prices)
+    metrics = calculate_trend_metrics(symbol, close_prices)
     return {
         key: value
         for key, value in metrics.items()
@@ -1754,11 +1656,20 @@ def _active_rebalance_metrics(symbol: str, close_prices: Sequence[Any]) -> Dict[
             "last_close",
             "min_close",
             "max_close",
-            "close_range_midpoint",
-            "close_range_volatility",
-            "close_range_volatility_pct",
             "net_return_pct",
+            "trend_return_pct",
+            "trend_magnitude",
+            "trend_slope",
+            "trend_strength",
+            "r_squared",
+            "efficiency",
+            "directional_consistency",
+            "weekly_consistency",
+            "daily_consistency",
+            "adverse_score",
             "screening_direction",
+            "screening_decision",
+            "trend_direction",
             "ranking_metric",
             "ranking_formula",
         }
@@ -1863,6 +1774,30 @@ def _active_rebalance_screened_payload(
         timeframe=str(config["ai_prompt_timeframe"]),
         expected_count=int(config["ai_prompt_candle_count"]),
         metrics=selected_metrics,
+    )
+
+
+def _active_rebalance_payload_from_prompt(
+    *,
+    symbol: str,
+    decision: str,
+    reference_price: float,
+    prompt_payload: Dict[str, Any],
+    config: Dict[str, Any],
+    metrics: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    timeframe = str(prompt_payload.get("ai_prompt_timeframe") or config["ai_prompt_timeframe"])
+    close_prices = prompt_payload.get("ai_prompt_close_prices")
+    if not isinstance(close_prices, (list, tuple)) or isinstance(close_prices, (str, bytes)):
+        close_prices = []
+    return _active_rebalance_candidate_payload(
+        symbol=symbol,
+        decision=decision,
+        reference_price=reference_price,
+        close_prices=close_prices,
+        timeframe=timeframe,
+        expected_count=int(config["ai_prompt_candle_count"]),
+        metrics=metrics,
     )
 
 
@@ -2185,186 +2120,11 @@ def _slot_result_base(slot: PortfolioSlot, symbol: Optional[str]) -> Dict[str, A
 
 
 def _slot_exception_result(slot: PortfolioSlot, slot_state: Dict[str, Any], exc: Exception) -> Dict[str, Any]:
-    fallback_symbol = slot.symbol if slot.kind == "passive" else _normalize_symbol(slot_state.get("symbol"))
+    fallback_symbol = _normalize_symbol(slot_state.get("symbol"))
     result = _slot_result_base(slot, fallback_symbol)
     result["action"] = "slot_execution_failed"
     result["error"] = str(exc)
     return result
-
-
-def _run_passive_slot(
-    *,
-    slot: PortfolioSlot,
-    slot_state: Dict[str, Any],
-    config: Dict[str, Any],
-    api_key: str,
-    api_secret: str,
-    account_overview: Dict[str, float],
-    position: Optional[Dict[str, Any]],
-    as_of_ms: int,
-    cycle_dir_factory: CycleDirFactory,
-    notification_callback: NotificationCallback,
-) -> tuple[Dict[str, Any], Dict[str, Any]]:
-    symbol = str(slot.symbol)
-    result = _slot_result_base(slot, symbol)
-    result["position_before"] = calculate_position_metrics(position) if isinstance(position, dict) else None
-    leverage = _leverage_for_slot(slot, config)
-    result["leverage"] = leverage
-    if isinstance(position, dict):
-        leverage_sync = _ensure_symbol_leverage(
-            api_key=api_key,
-            api_secret=api_secret,
-            symbol=symbol,
-            leverage=leverage,
-            current_position=position,
-        )
-        result["leverage_sync"] = leverage_sync
-        if not bool(leverage_sync.get("success")):
-            result["action"] = str(leverage_sync.get("action") or "set_leverage_failed")
-            result["position"] = calculate_position_metrics(position)
-            return result, slot_state
-        position = dict(position)
-        position["leverage"] = _normalize_positive_int(leverage_sync.get("actual_leverage"), leverage)
-
-    reference_price = _reference_price(symbol)
-    if reference_price is None:
-        result["action"] = "reference_price_unavailable"
-        return result, slot_state
-    result["current_price"] = reference_price
-    trigger_info = _determine_ai_trigger(
-        has_position=isinstance(position, dict),
-        current_price=reference_price,
-        slot_state=slot_state,
-        trigger_pct_usdt=float(config["trigger_pct_usdt"]),
-    )
-    result.update(
-        {
-            "trigger_reason": trigger_info.get("reason"),
-            "trigger_price": trigger_info.get("trigger_price"),
-            "next_trigger_down": trigger_info.get("next_trigger_down"),
-            "next_trigger_up": trigger_info.get("next_trigger_up"),
-        }
-    )
-
-    target_notional = _target_notional_usdt(
-        account_equity=float(account_overview["equity"]),
-        slot=slot,
-        capital_usage_ratio=float(config["capital_usage_ratio"]),
-        leverage=leverage,
-    )
-    available_cap = _available_notional_cap(
-        available_balance=float(account_overview.get("available_balance", 0.0)),
-        capital_usage_ratio=float(config["capital_usage_ratio"]),
-        leverage=leverage,
-    )
-    result["target_notional_usdt"] = target_notional
-
-    if not bool(trigger_info.get("should_trigger")):
-        if isinstance(position, dict):
-            last_decision = _normalize_ai_decision(slot_state.get("last_ai_decision"))
-            if last_decision is None:
-                result["action"] = "missing_ai_decision_for_rebalance"
-                result["position"] = calculate_position_metrics(position)
-                return result, slot_state
-            execution = _rebalance_existing_position(
-                api_key=api_key,
-                api_secret=api_secret,
-                symbol=symbol,
-                position=position,
-                decision=last_decision,
-                target_notional_usdt=target_notional,
-                reference_price=reference_price,
-                leverage=leverage,
-                available_notional_cap=available_cap,
-                rebalance_threshold_pct=float(config["rebalance_threshold_pct"]),
-                stop_loss_pct=float(config["stop_loss_pct"]),
-            )
-            result["execution"] = execution
-            result["position"] = execution.get("position") or calculate_position_metrics(position)
-            result["stop_sync"] = execution.get("stop_sync")
-            result["action"] = str(execution.get("action") or "kept_position_size")
-            result["success"] = bool(execution.get("success"))
-        else:
-            result["action"] = "waiting_for_position"
-            result["success"] = True
-        return result, _update_slot_trigger_state(
-            slot_state,
-            ai_triggered=False,
-            trigger_info=trigger_info,
-            symbol=symbol,
-        )
-
-    decision, ai_analysis, prompt_payload, ai_error = _evaluate_slot_direction_or_none(
-        slot=slot,
-        symbol=symbol,
-        reference_price=reference_price,
-        config=config,
-        as_of_ms=as_of_ms,
-        cycle_dir_factory=cycle_dir_factory,
-        notification_callback=notification_callback,
-        position=position,
-        trigger_info=trigger_info,
-        decision_mode="passive_direction",
-    )
-    result["ai_triggered"] = True
-    result["ai_decision"] = decision
-    result["ai_analysis"] = ai_analysis
-    result.update(prompt_payload)
-    if ai_error:
-        result["error"] = ai_error
-    if decision is None:
-        result["action"] = "ai_decision_failed"
-        return result, slot_state
-
-    if isinstance(position, dict):
-        execution = _rebalance_existing_position(
-            api_key=api_key,
-            api_secret=api_secret,
-            symbol=symbol,
-            position=position,
-            decision=decision,
-            target_notional_usdt=target_notional,
-            reference_price=reference_price,
-            leverage=leverage,
-            available_notional_cap=available_cap,
-            rebalance_threshold_pct=float(config["rebalance_threshold_pct"]),
-            stop_loss_pct=float(config["stop_loss_pct"]),
-        )
-    else:
-        execution = _place_direction_position(
-            api_key=api_key,
-            api_secret=api_secret,
-            symbol=symbol,
-            decision=decision,
-            target_notional_usdt=target_notional,
-            reference_price=reference_price,
-            leverage=leverage,
-            available_notional_cap=available_cap,
-        )
-        if bool(execution.get("success")) and str(execution.get("action")) == "opened_new_position":
-            _merge_post_trade_sync_result(
-                execution,
-                _sync_position_after_trade(
-                    api_key=api_key,
-                    api_secret=api_secret,
-                    symbol=symbol,
-                    stop_loss_pct=float(config["stop_loss_pct"]),
-                    expected_decision=decision,
-                ),
-            )
-    result["execution"] = execution
-    result["success"] = bool(execution.get("success"))
-    result["action"] = str(execution.get("action") or "execution_failed")
-    result["position"] = execution.get("position")
-    result["stop_sync"] = execution.get("stop_sync")
-    updated_state = _update_slot_trigger_state(
-        slot_state,
-        ai_triggered=True,
-        trigger_info=trigger_info,
-        ai_decision=decision,
-        symbol=symbol,
-    )
-    return result, updated_state
 
 
 def _active_exclusions(
@@ -2378,7 +2138,8 @@ def _active_exclusions(
     allowed_symbol: Optional[str] = None,
 ) -> list[str]:
     allowed = _normalize_symbol(allowed_symbol)
-    excluded = set(config["passive_symbols"])
+    del config
+    excluded: set[str] = set()
     excluded.update(
         symbol
         for symbol in (_normalize_symbol(value) for value in banned_symbols)
@@ -2469,14 +2230,105 @@ def _run_active_slot(
         reference_price = _reference_price(current_symbol)
         result["symbol"] = current_symbol
         result["current_price"] = reference_price
-        tracked_state, backfilled_entry_time = _ensure_active_entry_timestamp(slot_state, as_of_ms=as_of_ms)
+        if reference_price is None:
+            result["action"] = "reference_price_unavailable"
+            result["position"] = calculate_position_metrics(position)
+            return result, slot_state, current_symbol
+        tracked_state, _ = _ensure_active_entry_timestamp(slot_state, as_of_ms=as_of_ms)
         tracked_state["symbol"] = current_symbol
         result["entered_at"] = tracked_state.get("entered_at")
         result["last_active_rank_checked_at"] = tracked_state.get("last_active_rank_checked_at")
 
-        if not active_mode_changed and (
-            backfilled_entry_time or not _active_rank_review_due(tracked_state, config=config, as_of_ms=as_of_ms)
-        ):
+        active_rank_due = _active_rank_review_due(tracked_state, config=config, as_of_ms=as_of_ms)
+        if not active_mode_changed and not active_rank_due:
+            trigger_info = _determine_ai_trigger(
+                has_position=True,
+                current_price=reference_price,
+                slot_state=tracked_state,
+                trigger_pct_usdt=float(config["trigger_pct_usdt"]),
+            )
+            result.update(
+                {
+                    "trigger_reason": trigger_info.get("reason"),
+                    "trigger_price": trigger_info.get("trigger_price"),
+                    "next_trigger_down": trigger_info.get("next_trigger_down"),
+                    "next_trigger_up": trigger_info.get("next_trigger_up"),
+                }
+            )
+
+            if bool(trigger_info.get("should_trigger")):
+                decision, ai_analysis, prompt_payload, ai_error = _evaluate_active_direction_or_none(
+                    slot=slot,
+                    symbol=current_symbol,
+                    reference_price=reference_price,
+                    config=config,
+                    as_of_ms=as_of_ms,
+                    cycle_dir_factory=cycle_dir_factory,
+                    notification_callback=notification_callback,
+                    position=position,
+                    trigger_info=trigger_info,
+                )
+                result["ai_triggered"] = True
+                result["ai_decision"] = decision
+                result["ai_analysis"] = ai_analysis
+                result.update(prompt_payload)
+                if isinstance(prompt_payload.get("ai_prompt_close_prices"), list):
+                    result["close_prices"] = list(prompt_payload["ai_prompt_close_prices"])
+                if ai_error:
+                    result["error"] = ai_error
+
+                if decision is None:
+                    stop_sync = _sync_fixed_stop_loss(
+                        api_key=api_key,
+                        api_secret=api_secret,
+                        symbol=current_symbol,
+                        position=position,
+                        stop_loss_pct=float(config["stop_loss_pct"]),
+                    )
+                    result["position"] = calculate_position_metrics(position)
+                    result["stop_sync"] = stop_sync
+                    result["success"] = bool(stop_sync.get("success"))
+                    result["action"] = (
+                        "active_price_review_failed_position_kept" if result["success"] else "stop_loss_sync_failed"
+                    )
+                    updated_state = dict(tracked_state)
+                    updated_state["symbol"] = current_symbol
+                    return result, updated_state, current_symbol
+
+                execution = _rebalance_existing_position(
+                    api_key=api_key,
+                    api_secret=api_secret,
+                    symbol=current_symbol,
+                    position=position,
+                    decision=decision,
+                    target_notional_usdt=target_notional,
+                    reference_price=reference_price,
+                    leverage=leverage,
+                    available_notional_cap=available_cap,
+                    rebalance_threshold_pct=float(config["rebalance_threshold_pct"]),
+                    stop_loss_pct=float(config["stop_loss_pct"]),
+                )
+                result["execution"] = execution
+                result["position"] = execution.get("position") or calculate_position_metrics(position)
+                result["stop_sync"] = execution.get("stop_sync")
+                result["success"] = bool(execution.get("success"))
+                result["action"] = str(execution.get("action") or "active_price_review_position_kept")
+                updated_state = _mark_active_screening_mode_current(
+                    slot,
+                    _update_slot_trigger_state(
+                        tracked_state,
+                        ai_triggered=True,
+                        trigger_info=trigger_info,
+                        ai_decision=decision,
+                        symbol=current_symbol,
+                        update_anchor=True,
+                    ),
+                )
+                updated_state["symbol"] = current_symbol
+                result["entered_at"] = updated_state.get("entered_at")
+                result["last_active_rank_checked_at"] = updated_state.get("last_active_rank_checked_at")
+                return result, updated_state, current_symbol
+
             stop_sync = _sync_fixed_stop_loss(
                 api_key=api_key,
                 api_secret=api_secret,
@@ -2488,8 +2340,15 @@ def _run_active_slot(
             result["stop_sync"] = stop_sync
             result["success"] = bool(stop_sync.get("success"))
             result["action"] = "kept_active_position_until_stop_loss" if result["success"] else "stop_loss_sync_failed"
-            updated_state = dict(tracked_state)
-            updated_state["symbol"] = current_symbol
+            updated_state = _mark_active_screening_mode_current(
+                slot,
+                _update_slot_trigger_state(
+                    tracked_state,
+                    ai_triggered=False,
+                    trigger_info=trigger_info,
+                    symbol=current_symbol,
+                ),
+            )
             return result, updated_state, current_symbol
 
         trigger_info = {
@@ -2570,6 +2429,10 @@ def _run_active_slot(
         current_rebalance_payload: Optional[Dict[str, Any]] = None
         candidate_rebalance_payload: Optional[Dict[str, Any]] = None
         selected_rebalance_symbol: Optional[str] = None
+        selected_direction_decision: Optional[str] = None
+        selected_ai_analysis: Dict[str, Any] = {}
+        selected_prompt_payload: Dict[str, Any] = {}
+        selected_ai_error: Optional[str] = None
         candidate_reference_price = (
             reference_price if candidate_symbol == current_symbol else _reference_price(candidate_symbol)
         )
@@ -2608,18 +2471,74 @@ def _run_active_slot(
 
         if not active_mode_changed and candidate_symbol != current_symbol:
             try:
-                current_rebalance_payload = _active_rebalance_current_payload(
-                    current_symbol=current_symbol,
-                    position=position,
-                    slot_state=tracked_state,
-                    reference_price=reference_price,
-                    config=config,
-                    as_of_ms=as_of_ms,
+                current_decision, current_ai_analysis, current_prompt_payload, current_ai_error = (
+                    _evaluate_active_direction_or_none(
+                        slot=slot,
+                        symbol=current_symbol,
+                        reference_price=reference_price,
+                        config=config,
+                        as_of_ms=as_of_ms,
+                        cycle_dir_factory=cycle_dir_factory,
+                        notification_callback=notification_callback,
+                        position=position,
+                        trigger_info=trigger_info,
+                    )
                 )
-                candidate_rebalance_payload = _active_rebalance_screened_payload(
-                    candidate=candidate,
-                    reference_price=candidate_reference_price,
+                candidate_decision, candidate_ai_analysis, candidate_prompt_payload, candidate_ai_error = (
+                    _evaluate_active_direction_or_none(
+                        slot=slot,
+                        symbol=candidate_symbol,
+                        reference_price=candidate_reference_price,
+                        config=config,
+                        as_of_ms=as_of_ms,
+                        cycle_dir_factory=cycle_dir_factory,
+                        notification_callback=notification_callback,
+                        position=None,
+                        trigger_info=trigger_info,
+                    )
+                )
+                result["ai_triggered"] = True
+                result["active_direction_reviews"] = {
+                    "current": {
+                        "symbol": current_symbol,
+                        "decision": current_decision,
+                        "analysis": current_ai_analysis,
+                        "error": current_ai_error,
+                    },
+                    "candidate": {
+                        "symbol": candidate_symbol,
+                        "decision": candidate_decision,
+                        "analysis": candidate_ai_analysis,
+                        "error": candidate_ai_error,
+                    },
+                }
+                if current_decision is None or candidate_decision is None:
+                    failed_parts = []
+                    if current_decision is None:
+                        failed_parts.append(f"current_direction_failed: {current_ai_error or 'no_decision'}")
+                    if candidate_decision is None:
+                        failed_parts.append(f"candidate_direction_failed: {candidate_ai_error or 'no_decision'}")
+                    raise ValueError("; ".join(failed_parts))
+
+                current_rebalance_payload = _active_rebalance_payload_from_prompt(
+                    symbol=current_symbol,
+                    decision=current_decision,
+                    reference_price=reference_price,
+                    prompt_payload=current_prompt_payload,
                     config=config,
+                )
+                selected = (
+                    (candidate.get("selection") or {}).get("selected")
+                    if isinstance(candidate.get("selection"), dict)
+                    else {}
+                )
+                candidate_rebalance_payload = _active_rebalance_payload_from_prompt(
+                    symbol=candidate_symbol,
+                    decision=candidate_decision,
+                    reference_price=candidate_reference_price,
+                    prompt_payload=candidate_prompt_payload,
+                    config=config,
+                    metrics=selected if isinstance(selected, dict) else None,
                 )
             except Exception as exc:
                 stop_sync = _sync_fixed_stop_loss(
@@ -2704,6 +2623,10 @@ def _run_active_slot(
             if selected_rebalance_symbol == current_symbol:
                 candidate_symbol = current_symbol
                 candidate_reference_price = reference_price
+                selected_direction_decision = str((current_rebalance_payload or {}).get("decision") or "")
+                selected_ai_analysis = current_ai_analysis
+                selected_prompt_payload = current_prompt_payload
+                selected_ai_error = current_ai_error
                 result["symbol"] = current_symbol
                 result["current_price"] = reference_price
                 result["close_prices"] = _selected_rebalance_close_prices(
@@ -2747,22 +2670,32 @@ def _run_active_slot(
                 )
                 return result, updated_state, current_symbol
             else:
+                selected_direction_decision = str((candidate_rebalance_payload or {}).get("decision") or "")
+                selected_ai_analysis = candidate_ai_analysis
+                selected_prompt_payload = candidate_prompt_payload
+                selected_ai_error = candidate_ai_error
                 result["close_prices"] = _selected_rebalance_close_prices(
                     candidate_rebalance_payload,
                     str(config["ai_prompt_timeframe"]),
                 )
 
-        decision, ai_analysis, prompt_payload, ai_error = _evaluate_active_direction_or_none(
-            slot=slot,
-            symbol=candidate_symbol,
-            reference_price=candidate_reference_price,
-            config=config,
-            as_of_ms=as_of_ms,
-            cycle_dir_factory=cycle_dir_factory,
-            notification_callback=notification_callback,
-            position=position if candidate_symbol == current_symbol else None,
-            trigger_info=trigger_info,
-        )
+        if selected_direction_decision is not None:
+            decision = _normalize_ai_decision(selected_direction_decision)
+            ai_analysis = selected_ai_analysis
+            prompt_payload = selected_prompt_payload
+            ai_error = selected_ai_error
+        else:
+            decision, ai_analysis, prompt_payload, ai_error = _evaluate_active_direction_or_none(
+                slot=slot,
+                symbol=candidate_symbol,
+                reference_price=candidate_reference_price,
+                config=config,
+                as_of_ms=as_of_ms,
+                cycle_dir_factory=cycle_dir_factory,
+                notification_callback=notification_callback,
+                position=position if candidate_symbol == current_symbol else None,
+                trigger_info=trigger_info,
+            )
         result["ai_triggered"] = True
         result["ai_decision"] = decision
         result["ai_analysis"] = ai_analysis
@@ -3127,14 +3060,11 @@ def run_portfolio_cycle(
         "slot_results": [],
         "state_update": portfolio_state,
         "config_summary": {
-            "fixed_leverage": config["fixed_leverage"],
-            "passive_leverage": config["passive_leverage"],
             "active_leverage": config["active_leverage"],
             "capital_usage_ratio": config["capital_usage_ratio"],
             "trigger_pct_usdt": config["trigger_pct_usdt"],
             "stop_loss_pct": config["stop_loss_pct"],
             "active_rescreen_interval_hours": config["active_rescreen_interval_hours"],
-            "passive_symbols": list(config["passive_symbols"]),
             "ai_prompt_timeframe": config["ai_prompt_timeframe"],
             "ai_prompt_candle_count": config["ai_prompt_candle_count"],
             "deepseek_model": config["deepseek_model"],
@@ -3203,50 +3133,30 @@ def run_portfolio_cycle(
         try:
             positions = get_positions(api_key, api_secret)
             if positions is None:
-                slot_result = _slot_result_base(slot, slot.symbol)
+                slot_result = _slot_result_base(slot, _normalize_symbol(slot_state.get("symbol")))
                 slot_result["action"] = "positions_fetch_failed"
                 updated_slot_state = slot_state
                 reserved_active_symbol = None
             else:
                 account_overview = get_account_overview(api_key, api_secret) or account_overview
-                positions_map = _positions_by_symbol(positions)
-
-                if slot.kind == "passive":
-                    position = positions_map.get(str(slot.symbol))
-                    slot_result, updated_slot_state = _run_passive_slot(
-                        slot=slot,
-                        slot_state=slot_state,
-                        config=config,
-                        api_key=api_key,
-                        api_secret=api_secret,
-                        account_overview=account_overview,
-                        position=position,
-                        as_of_ms=resolved_as_of_ms,
-                        cycle_dir_factory=ensure_cycle_dir,
-                        notification_callback=notification_callback,
-                    )
-                    reserved_active_symbol = None
-                    if slot.symbol:
-                        reserved_symbols.add(slot.symbol)
-                else:
-                    slot_result, updated_slot_state, reserved_active_symbol = _run_active_slot(
-                        slot=slot,
-                        slot_state=slot_state,
-                        config=config,
-                        api_key=api_key,
-                        api_secret=api_secret,
-                        account_overview=account_overview,
-                        open_positions=positions,
-                        reserved_symbols=reserved_symbols,
-                        as_of_ms=resolved_as_of_ms,
-                        cycle_dir_factory=ensure_cycle_dir,
-                        notification_callback=notification_callback,
-                        recent_universe_symbols=recent_active_symbols_by_mode.get(
-                            _active_screening_mode(slot),
-                            set(),
-                        ),
-                        runtime_banned_symbols=_runtime_banned_symbols(portfolio_state),
-                    )
+                slot_result, updated_slot_state, reserved_active_symbol = _run_active_slot(
+                    slot=slot,
+                    slot_state=slot_state,
+                    config=config,
+                    api_key=api_key,
+                    api_secret=api_secret,
+                    account_overview=account_overview,
+                    open_positions=positions,
+                    reserved_symbols=reserved_symbols,
+                    as_of_ms=resolved_as_of_ms,
+                    cycle_dir_factory=ensure_cycle_dir,
+                    notification_callback=notification_callback,
+                    recent_universe_symbols=recent_active_symbols_by_mode.get(
+                        _active_screening_mode(slot),
+                        set(),
+                    ),
+                    runtime_banned_symbols=_runtime_banned_symbols(portfolio_state),
+                )
         except Exception as exc:
             logger.error(
                 "Slot execution failed | %s",
@@ -3258,12 +3168,11 @@ def run_portfolio_cycle(
             reserved_active_symbol = None
 
         portfolio_state["slots"][slot.slot_id] = updated_slot_state
-        if slot.kind == "active":
-            recent_active_symbols_by_mode.setdefault(_active_screening_mode(slot), set()).update(
-                _active_slot_memory_symbols(updated_slot_state)
-            )
-            if reserved_active_symbol:
-                reserved_symbols.add(reserved_active_symbol)
+        recent_active_symbols_by_mode.setdefault(_active_screening_mode(slot), set()).update(
+            _active_slot_memory_symbols(updated_slot_state)
+        )
+        if reserved_active_symbol:
+            reserved_symbols.add(reserved_active_symbol)
 
         result["slot_results"].append(slot_result)
         portfolio_state = _record_symbol_bans_from_slot_result(
