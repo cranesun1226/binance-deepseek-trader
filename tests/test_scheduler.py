@@ -115,7 +115,7 @@ class SchedulerTests(unittest.TestCase):
         with patch("src.strategy.scheduler.send_telegram_message", return_value=True) as mocked_text, patch(
             "src.strategy.scheduler.build_close_price_line_chart_png", return_value=b"png"
         ) as mocked_chart, patch("src.strategy.scheduler.send_telegram_photo", return_value=True) as mocked_photo:
-            scheduler._notify_telegram_event("active_screening_after", payload)
+            status = scheduler._notify_telegram_event("active_screening_after", payload)
 
         mocked_text.assert_called_once()
         self.assertIn("Active Screening Decision", mocked_text.call_args.args[0])
@@ -124,6 +124,10 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(mocked_chart.call_args.args[0], [52.0, 54.0, 55.0])
         mocked_photo.assert_called_once()
         self.assertIn("Active Screening Close Prices Line Chart", mocked_photo.call_args.kwargs["caption"])
+        self.assertEqual(status["event"], "active_screening_after")
+        self.assertTrue(status["sent"])
+        self.assertTrue(status["chart_sent"])
+        self.assertEqual(status["symbol"], "NQUSDT")
 
 
 if __name__ == "__main__":

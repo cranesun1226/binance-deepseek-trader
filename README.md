@@ -2,7 +2,7 @@
 
 DeepSeek-assisted four-slot Binance USDT-M futures trading bot.
 
-This project runs a four-slot portfolio loop across three fixed 2x-leverage passive markets and one dynamically screened 2x-leverage TradFi active market. Passive slots are evaluated one symbol at a time by DeepSeek using `deepseek-v4-flash` with `max` reasoning effort. The active slot uses the screener to select the TradFi candidate and the same DeepSeek trader flow to decide the actual `LONG`/`SHORT` direction; after entry, the 24h active review re-ranks TradFi candidates with the current symbol allowed, then either reviews/rebalances the current symbol or switches to the new top candidate in DeepSeek's direction.
+This project runs a four-slot portfolio loop across two fixed 2x-leverage passive markets and two dynamically screened 2x-leverage TradFi active markets. Passive slots are evaluated one symbol at a time by DeepSeek using `deepseek-v4-flash` with `max` reasoning effort. Each active slot uses the screener to select a TradFi candidate and the same DeepSeek trader flow to decide the actual `LONG`/`SHORT` direction; after entry, the 24h active review re-ranks TradFi candidates with the current symbol allowed, then asks DeepSeek rebalancer before switching away from the current symbol.
 
 > This software is for research and automation experiments. It is not financial advice. Futures trading can lose money quickly, and live mode sends real Binance Futures orders.
 
@@ -15,11 +15,11 @@ This project runs a four-slot portfolio loop across three fixed 2x-leverage pass
   - reasoning effort: `max` (`xhigh` legacy values are normalized to `max`; `low`/`medium` map to `high`)
   - DeepSeek JSON Output 응답을 로컬에서 검증해 `LONG` 또는 `SHORT`만 허용
 - 4개 슬롯 포트폴리오
-  - Passive: `CLUSDT`, `BTCUSDT`, `XAUUSDT`
-  - Active 1: 168개 종가 range volatility가 가장 큰 TradFi USDT-M perpetual, 후보 선정 후 DeepSeek trader가 LONG/SHORT 결정
+  - Passive: `CLUSDT`, `BTCUSDT`
+  - Active 1/2: 168개 종가 range volatility가 가장 큰 TradFi USDT-M perpetual, 후보 선정 후 DeepSeek trader가 LONG/SHORT 결정
 - 자산 배분
   - Passive 각 25%
-  - Active slot 25%
+  - Active slot 각 25%
   - 기본 총 투입률 99%, passive 2x / active 2x 레버리지
 - 리스크 관리
   - 각 포지션 진입가 기준 4% stop loss 동기화
@@ -31,18 +31,16 @@ This project runs a four-slot portfolio loop across three fixed 2x-leverage pass
   - Telegram 메시지
   - passive DeepSeek structured `reason` 판단 근거 요약 전송
   - 1시간봉 가격 차트 이미지 전송
-- 검증
-  - 실제 주문 없이 Binance 공개 데이터, passive/active DeepSeek, active screener, Telegram까지 통과하는 live-data dry-run 스크립트 제공
 
 ### 실제 구동해도 되나?
 
-실제 구동 전에는 전체 4슬롯 사이클, passive DeepSeek 판단, active screener 후보 선정, active DeepSeek 방향 판단, Telegram 전송, 주문 수량 계산까지 live-data dry-run으로 다시 확인하세요. 다만 실제 구동 전에는 아래 체크리스트를 반드시 확인하세요.
+실제 구동 전에는 테스트와 설정을 다시 확인하고, 첫 실행은 작은 자금의 단일 사이클로 시작하세요. 아래 체크리스트를 반드시 확인하세요.
 
 - Binance 계좌를 자동화 전용으로 분리했는지 확인
 - 기존 수동 포지션이 있어도 자동 청산되어도 괜찮은 계좌인지 확인
 - Binance Futures API key에 필요한 futures trading 권한이 있는지 확인
 - `.env`가 절대 Git에 올라가지 않는지 확인
-- `python scripts/dry_run_live_cycle.py`가 다시 성공하는지 확인
+- `python -m unittest discover`가 성공하는지 확인
 - 첫 live run은 아주 작은 자금으로 `python main.py --once`부터 실행
 - Telegram에서 각 슬롯 판단, 주문 결과, stop sync 메시지를 확인한 뒤 scheduler 상시 실행
 
@@ -52,9 +50,9 @@ DeepSeek trader에는 한 번에 한 종목의 `symbol`, 현재 `reference_price
 
 ### Active 스크리닝과 리밸런싱
 
-Active 1은 TradFi USDT-M perpetual만 대상으로 합니다. 신규 진입 후보를 찾을 때는 passive 심볼, 이미 관리 중인 심볼, 런타임에서 차단된 심볼, 그리고 active 슬롯의 현재 또는 직전 심볼을 제외합니다. 24시간 리뷰에서는 현재 active 심볼을 후보군에 허용해 현재 포지션도 같은 랭킹 규칙으로 다시 평가합니다.
+Active 1/2는 TradFi USDT-M perpetual만 대상으로 합니다. 신규 진입 후보를 찾을 때는 passive 심볼, 이미 관리 중인 심볼, 런타임에서 차단된 심볼, 해당 active 슬롯의 현재 또는 직전 심볼, 그리고 같은 TradFi universe에 있는 다른 active 슬롯의 현재 또는 직전 심볼을 제외합니다. 24시간 리뷰에서는 현재 active 심볼을 후보군에 허용해 현재 포지션도 같은 랭킹 규칙으로 다시 평가합니다.
 
-각 후보는 `ai_prompt_timeframe`의 `ai_prompt_candle_count`개 종가를 가져와 `abs(last_close-first_close)/((last_close+first_close)/2)`로 계산한 `close_range_volatility`가 큰 순서로 선정합니다. 기본값은 168개의 1시간봉 종가입니다. 스크리너는 같은 종가 구간의 `last_close > first_close`이면 `LONG`, `last_close < first_close`이면 `SHORT`를 기록하지만, 이 값은 후보 필터링/알림용 메타데이터입니다. 실제 active 주문 방향은 후보가 정해진 뒤 `src/ai/deepseek_trader.py`의 단일 심볼 DeepSeek 판단으로 결정됩니다. 보합 후보는 active 진입 후보에서 제외됩니다. Active 포지션이 열린 뒤에는 1% 트리거로 재스크리닝하지 않으며, `active_rescreen_interval_hours` 기본 24시간마다 현재 심볼을 허용한 상태로 TradFi 후보를 다시 랭킹합니다. 현재 심볼이 계속 최상위면 DeepSeek trader 방향으로 기존 포지션을 유지/리밸런스/반전하고, 새 심볼이 최상위면 기존 포지션을 닫은 뒤 새 심볼을 DeepSeek trader 방향으로 엽니다. 랭킹 전에 Binance가 최신으로 반환한 2개의 1시간봉 high/low range를 검사하며, 둘 중 하나라도 4%를 넘으면 후보에서 제외합니다. 이 최신 2개에는 반드시 현재 진행 중인 1시간봉과 그 직전 1시간봉이 포함됩니다. 완전히 닫힌 봉 2개만 보는 방식이 아닙니다.
+각 후보는 `ai_prompt_timeframe`의 `ai_prompt_candle_count`개 종가를 가져와 `abs(last_close-first_close)/((last_close+first_close)/2)`로 계산한 `close_range_volatility`가 큰 순서로 선정합니다. 기본값은 168개의 1시간봉 종가입니다. 스크리너는 같은 종가 구간의 `last_close > first_close`이면 `LONG`, `last_close < first_close`이면 `SHORT`를 기록하지만, 이 값은 후보 필터링/알림용 메타데이터입니다. 실제 active 주문 방향은 후보가 정해진 뒤 `src/ai/deepseek_trader.py`의 단일 심볼 DeepSeek 판단으로 결정됩니다. 보합 후보는 active 진입 후보에서 제외됩니다. Active 포지션이 열린 뒤에는 1% 트리거로 재스크리닝하지 않으며, `active_rescreen_interval_hours` 기본 24시간마다 현재 심볼을 허용한 상태로 TradFi 후보를 다시 랭킹합니다. 현재 심볼이 계속 최상위면 DeepSeek trader 방향으로 기존 포지션을 유지/리밸런스/반전합니다. 새 심볼이 최상위면 `src/ai/deepseek_rebalancer.py`의 DeepSeek rebalancer가 현재 심볼과 새 후보 중 하나를 먼저 선택하고, 현재가 선택되면 현재 포지션을 DeepSeek trader 방향으로 재검토하며, 새 후보가 선택될 때만 기존 포지션을 닫은 뒤 새 심볼을 DeepSeek trader 방향으로 엽니다. 랭킹 전에 Binance가 최신으로 반환한 2개의 1시간봉 high/low range를 검사하며, 둘 중 하나라도 4%를 넘으면 후보에서 제외합니다. 이 최신 2개에는 반드시 현재 진행 중인 1시간봉과 그 직전 1시간봉이 포함됩니다. 완전히 닫힌 봉 2개만 보는 방식이 아닙니다.
 
 ### 설치
 
@@ -102,40 +100,20 @@ active_rescreen_interval_hours: 24
 passive_symbols:
   - CLUSDT
   - BTCUSDT
-  - XAUUSDT
 # Active candidates are ranked by close_range_volatility over
-# ai_prompt_candle_count closes on ai_prompt_timeframe. The active slot
-# screens TradFi candidates only. The screener direction is metadata; actual
+# ai_prompt_candle_count closes on ai_prompt_timeframe. Both active slots
+# screen TradFi candidates only. The screener direction is metadata; actual
 # active LONG/SHORT direction is decided by DeepSeek trader. The 24h active
-# review re-ranks candidates with the current symbol allowed, then keeps or
-# switches according to the top-ranked symbol and DeepSeek trader direction.
+# review re-ranks candidates with the current symbol allowed. If a new symbol
+# is top-ranked, DeepSeek rebalancer first chooses whether to keep the current
+# symbol or switch to the new candidate.
+# Active slots exclude each other's current and previous TradFi symbols.
 # The 4% filter uses the latest returned 2 klines, intentionally including
 # the current forming 1h candle.
 screener_quote: USDT
 screener_timeout: 30.0
 screener_retries: 3
 screener_request_sleep: 0.10
-```
-
-### Dry Run
-
-실제 Binance 주문 없이 다음 항목을 실제로 검증합니다.
-
-- Binance public market data
-- Active symbol screening
-- Passive/active DeepSeek LLM 판단
-- Telegram 메시지와 차트 전송
-- 주문 수량 계산
-- stop-loss sync 경로
-
-```bash
-python scripts/dry_run_live_cycle.py
-```
-
-Telegram 없이 검증하려면:
-
-```bash
-python scripts/dry_run_live_cycle.py --no-telegram
 ```
 
 ### 실제 실행
@@ -183,7 +161,7 @@ journalctl -u binance-deepseek-trader -f
 
 ```bash
 python -m unittest discover
-python -m py_compile main.py src/ai/deepseek_trader.py src/strategy/portfolio_strategy.py src/strategy/active_screener.py src/strategy/scheduler.py src/binance/trade_position.py src/infra/env_loader.py src/infra/telegram.py scripts/dry_run_live_cycle.py
+python -m py_compile main.py src/ai/deepseek_trader.py src/strategy/portfolio_strategy.py src/strategy/active_screener.py src/strategy/scheduler.py src/binance/trade_position.py src/infra/env_loader.py src/infra/telegram.py
 ```
 
 ### 프로젝트 구조
@@ -192,8 +170,6 @@ python -m py_compile main.py src/ai/deepseek_trader.py src/strategy/portfolio_st
 .
 ├── main.py                         # CLI entrypoint
 ├── setting.yaml                    # Runtime portfolio and model config
-├── scripts/
-│   └── dry_run_live_cycle.py       # Live-data dry-run without Binance orders
 ├── src/
 │   ├── ai/
 │   │   └── deepseek_trader.py      # DeepSeek structured LONG/SHORT decisions
@@ -231,34 +207,32 @@ python -m py_compile main.py src/ai/deepseek_trader.py src/strategy/portfolio_st
   - Reasoning effort: `max` (`xhigh` legacy values are normalized to `max`; `low`/`medium` map to `high`)
   - DeepSeek JSON Output is locally validated to accept only `LONG` or `SHORT`
 - Four-slot portfolio
-  - Passive: `CLUSDT`, `BTCUSDT`, `XAUUSDT`
-  - Active 1: TradFi USDT-M perpetual with the largest 168-close range volatility, with actual LONG/SHORT decided by DeepSeek trader after candidate selection
+  - Passive: `CLUSDT`, `BTCUSDT`
+  - Active 1/2: TradFi USDT-M perpetuals with the largest 168-close range volatility after exclusions, with actual LONG/SHORT decided by DeepSeek trader after candidate selection
 - Allocation
   - 25% per passive slot
-  - 25% for the active slot
+  - 25% per active slot
   - 99% default capital usage, 2x passive leverage and 2x active leverage
 - Risk management
   - Native stop loss synchronized at 4% from entry price
   - Passive slots re-evaluate after a ±1% move from the last decision anchor
-  - The active slot ignores the 1% trigger and every 24h re-ranks TradFi candidates with the current symbol allowed, then keeps/rebalances/switches using DeepSeek trader direction
+  - Active slots ignore the 1% trigger and every 24h re-rank TradFi candidates with the current symbol allowed; if a new symbol ranks first, DeepSeek rebalancer decides whether to keep the current symbol or switch
   - Passive slots rebalance toward target slot weights
   - Designed for a dedicated automation account: unmanaged manual positions may be closed automatically
 - Notifications
   - Telegram messages
   - Passive DeepSeek structured `reason` rationale summaries
   - 1h price chart images
-- Validation
-  - Includes a live-data dry-run script that calls Binance public data, passive/active DeepSeek, active screening, and Telegram without submitting Binance orders
 
 ### Can I Run It Live?
 
-Before running live, re-run the live-data dry run for the full four-slot cycle, including passive DeepSeek decisions, active screener candidate selection, active DeepSeek direction decisions, Telegram delivery, and order quantity planning. Then complete this checklist:
+Before running live, re-run the test suite, confirm configuration, and start with a small one-cycle live run. Complete this checklist:
 
 - Use a dedicated Binance Futures automation account
 - Confirm unmanaged/manual positions may be closed automatically
 - Confirm your Binance API key has the required Futures permissions
 - Confirm `.env` is never committed
-- Re-run `python scripts/dry_run_live_cycle.py`
+- Re-run `python -m unittest discover`
 - Start live trading with a very small balance and `python main.py --once`
 - Review Telegram messages for each slot before running the scheduler continuously
 
@@ -268,9 +242,9 @@ DeepSeek trader receives only one symbol at a time: `symbol`, live `reference_pr
 
 ### Active Screening
 
-Active 1 screens TradFi USDT-M perpetuals only. For new-entry candidate selection, passive symbols, already-managed symbols, runtime-banned symbols, and the active slot's current or immediately previous symbol are excluded. During the 24h review, the current active symbol is allowed so the current position is evaluated by the same ranking rule.
+Active 1/2 screen TradFi USDT-M perpetuals only. For new-entry candidate selection, passive symbols, already-managed symbols, runtime-banned symbols, the active slot's current or immediately previous symbol, and the other same-universe active slot's current or immediately previous symbol are excluded. During the 24h review, the current active symbol is allowed so the current position is evaluated by the same ranking rule.
 
-For each candidate, the screener fetches `ai_prompt_candle_count` closes on `ai_prompt_timeframe` and ranks by `close_range_volatility = abs(last_close-first_close)/((last_close+first_close)/2)`, highest first. The default is 168 recent 1h closes. The screener records `LONG` when `last_close > first_close` and `SHORT` when `last_close < first_close`, but that screening direction is metadata for filtering and notifications. The actual active order direction is decided after candidate selection by the single-symbol DeepSeek trader flow in `src/ai/deepseek_trader.py`. Flat candidates are excluded from active entries. After an active position opens, the slot does not re-screen on the 1% trigger; instead, every `active_rescreen_interval_hours` hours, default 24h, it re-ranks TradFi candidates while allowing the current symbol. If the current symbol remains top-ranked, DeepSeek trader reviews its direction and the existing position is kept/rebalanced/reversed as needed; if a new symbol becomes top-ranked, the old position is closed and the new candidate is opened in DeepSeek trader's direction. Before ranking, the screener checks the high/low range of the latest two 1h klines returned by Binance and excludes a candidate if either one exceeds 4%. These latest two klines intentionally include the currently forming 1h candle and the immediately preceding candle; the filter does not use only fully closed candles.
+For each candidate, the screener fetches `ai_prompt_candle_count` closes on `ai_prompt_timeframe` and ranks by `close_range_volatility = abs(last_close-first_close)/((last_close+first_close)/2)`, highest first. The default is 168 recent 1h closes. The screener records `LONG` when `last_close > first_close` and `SHORT` when `last_close < first_close`, but that screening direction is metadata for filtering and notifications. The actual active order direction is decided after candidate selection by the single-symbol DeepSeek trader flow in `src/ai/deepseek_trader.py`. Flat candidates are excluded from active entries. After an active position opens, the slot does not re-screen on the 1% trigger; instead, every `active_rescreen_interval_hours` hours, default 24h, it re-ranks TradFi candidates while allowing the current symbol. If the current symbol remains top-ranked, DeepSeek trader reviews its direction and the existing position is kept/rebalanced/reversed as needed. If a new symbol becomes top-ranked, `src/ai/deepseek_rebalancer.py` first asks DeepSeek to select between the current symbol and the new candidate; the current position is only closed when the new candidate is selected, then the new candidate is opened in DeepSeek trader's direction. Before ranking, the screener checks the high/low range of the latest two 1h klines returned by Binance and excludes a candidate if either one exceeds 4%. These latest two klines intentionally include the currently forming 1h candle and the immediately preceding candle; the filter does not use only fully closed candles.
 
 ### Installation
 
@@ -318,40 +292,20 @@ active_rescreen_interval_hours: 24
 passive_symbols:
   - CLUSDT
   - BTCUSDT
-  - XAUUSDT
 # Active candidates are ranked by close_range_volatility over
-# ai_prompt_candle_count closes on ai_prompt_timeframe. The active slot
-# screens TradFi candidates only. The screener direction is metadata; actual
+# ai_prompt_candle_count closes on ai_prompt_timeframe. Both active slots
+# screen TradFi candidates only. The screener direction is metadata; actual
 # active LONG/SHORT direction is decided by DeepSeek trader. The 24h active
-# review re-ranks candidates with the current symbol allowed, then keeps or
-# switches according to the top-ranked symbol and DeepSeek trader direction.
+# review re-ranks candidates with the current symbol allowed. If a new symbol
+# is top-ranked, DeepSeek rebalancer first chooses whether to keep the current
+# symbol or switch to the new candidate.
+# Active slots exclude each other's current and previous TradFi symbols.
 # The 4% filter uses the latest returned 2 klines, intentionally including
 # the current forming 1h candle.
 screener_quote: USDT
 screener_timeout: 30.0
 screener_retries: 3
 screener_request_sleep: 0.10
-```
-
-### Dry Run
-
-This validates the live external integrations without Binance order submission:
-
-- Binance public market data
-- Active symbol screening
-- Passive/active DeepSeek LLM decisions
-- Telegram messages and chart images
-- Order quantity planning
-- Stop-loss sync path
-
-```bash
-python scripts/dry_run_live_cycle.py
-```
-
-Without Telegram:
-
-```bash
-python scripts/dry_run_live_cycle.py --no-telegram
 ```
 
 ### Live Run
@@ -399,7 +353,7 @@ journalctl -u binance-deepseek-trader -f
 
 ```bash
 python -m unittest discover
-python -m py_compile main.py src/ai/deepseek_trader.py src/strategy/portfolio_strategy.py src/strategy/active_screener.py src/strategy/scheduler.py src/binance/trade_position.py src/infra/env_loader.py src/infra/telegram.py scripts/dry_run_live_cycle.py
+python -m py_compile main.py src/ai/deepseek_trader.py src/strategy/portfolio_strategy.py src/strategy/active_screener.py src/strategy/scheduler.py src/binance/trade_position.py src/infra/env_loader.py src/infra/telegram.py
 ```
 
 ### Repository Layout
@@ -408,8 +362,6 @@ python -m py_compile main.py src/ai/deepseek_trader.py src/strategy/portfolio_st
 .
 ├── main.py                         # CLI entrypoint
 ├── setting.yaml                    # Runtime portfolio and model config
-├── scripts/
-│   └── dry_run_live_cycle.py       # Live-data dry-run without Binance orders
 ├── src/
 │   ├── ai/
 │   │   └── deepseek_trader.py      # DeepSeek structured LONG/SHORT decisions

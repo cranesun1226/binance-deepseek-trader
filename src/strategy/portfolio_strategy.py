@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional, Sequence
 
+from src.ai.deepseek_rebalancer import evaluate_active_rebalance_symbol
 from src.ai.deepseek_trader import evaluate_trade_direction
 from src.binance.market_data import fetch_klines, parse_klines
 from src.binance.trade_position import (
@@ -35,6 +36,7 @@ from src.infra.env_loader import get_binance_credentials
 from src.infra.logger import format_log_details, get_logger
 from src.strategy.active_screener import (
     NoActiveCandidateError,
+    calculate_close_range_volatility_metrics,
     screen_active_tradfi_symbol,
 )
 from src.strategy.runtime_config import (
@@ -71,8 +73,13 @@ ACTIVE_SCREENING_MODES = {"crypto", "tradfi"}
 LEGACY_ACTIVE_SCREENING_MODES_BY_SLOT_ID = {
     "active_1": "crypto",
 }
+LEGACY_PASSIVE_XAU_SLOT_ID = "passive_xau"
+MIGRATED_ACTIVE_SLOT_ID = "active_2"
 PORTFOLIO_SLOT_TARGET_MARGIN_RATIO = 0.25
 MATERIAL_POSITION_RECORD_ACTIONS = {
+    "active_rebalance_review_failed_position_kept",
+    "active_rebalance_position_kept",
+    "active_rebalance_selection_failed_position_kept",
     "active_rank_review_failed_position_kept",
     "active_rank_switch_entry_failed",
     "active_rank_review_position_kept",
@@ -90,8 +97,9 @@ MATERIAL_POSITION_RECORD_ACTIONS = {
     "slot_execution_failed",
     "switch_close_failed",
     "switched_active_position_by_deepseek",
+    "switched_active_position_by_rebalancer",
 }
-NotificationCallback = Optional[Callable[[str, Dict[str, Any]], None]]
+NotificationCallback = Optional[Callable[[str, Dict[str, Any]], Any]]
 CycleDirFactory = Callable[[], str]
 
 
@@ -256,8 +264,8 @@ def _normalize_passive_symbols(value: Any) -> list[str]:
         symbol = _normalize_symbol(raw_symbol)
         if symbol and symbol not in symbols:
             symbols.append(symbol)
-    if len(symbols) != 3:
-        logger.warning("passive_symbols must contain 3 symbols; using defaults")
+    if len(symbols) != 2:
+        logger.warning("passive_symbols must contain 2 symbols; using defaults")
         return list(DEFAULT_PASSIVE_SYMBOLS)
     return symbols
 
@@ -325,7 +333,7 @@ def _load_strategy_config() -> Dict[str, Any]:
 
 def _build_portfolio_slots(config: Dict[str, Any]) -> list[PortfolioSlot]:
     passive_symbols = list(config["passive_symbols"])
-    passive_labels = ["passive_cl", "passive_btc", "passive_xau"]
+    passive_labels = ["passive_cl", "passive_btc"]
     slots = [
         PortfolioSlot(
             slot_id=slot_id,
@@ -340,6 +348,15 @@ def _build_portfolio_slots(config: Dict[str, Any]) -> list[PortfolioSlot]:
         PortfolioSlot(
             slot_id="active_1",
             label="active1",
+            kind="active",
+            target_margin_ratio=PORTFOLIO_SLOT_TARGET_MARGIN_RATIO,
+            active_screening_mode="tradfi",
+        )
+    )
+    slots.append(
+        PortfolioSlot(
+            slot_id="active_2",
+            label="active2",
             kind="active",
             target_margin_ratio=PORTFOLIO_SLOT_TARGET_MARGIN_RATIO,
             active_screening_mode="tradfi",
@@ -864,15 +881,55 @@ def _active_recent_symbols_by_mode(
     return grouped
 
 
+def _migrate_legacy_passive_xau_state_to_active(raw_slots: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    existing_active = raw_slots.get(MIGRATED_ACTIVE_SLOT_ID)
+    if isinstance(existing_active, dict):
+        return None
+
+    legacy_state = raw_slots.get(LEGACY_PASSIVE_XAU_SLOT_ID)
+    if not isinstance(legacy_state, dict):
+        return None
+
+    symbol = _normalize_symbol(legacy_state.get("symbol"))
+    if not symbol:
+        return None
+
+    migrated: Dict[str, Any] = {
+        "slot_id": MIGRATED_ACTIVE_SLOT_ID,
+        "kind": "active",
+        "symbol": symbol,
+        "active_screening_mode": "tradfi",
+        "active_screening_mode_changed": True,
+        "previous_active_screening_mode": "tradfi",
+        "previous_active_symbol": None,
+        "entered_at": legacy_state.get("entered_at"),
+        "last_active_rank_checked_at": legacy_state.get("last_active_rank_checked_at"),
+    }
+    for key in (
+        "last_ai_trigger_price",
+        "last_ai_triggered_at",
+        "last_ai_decision",
+        "next_trigger_down",
+        "next_trigger_up",
+    ):
+        if key in legacy_state:
+            migrated[key] = legacy_state.get(key)
+    return migrated
+
+
 def _normalize_portfolio_state(previous_state: Optional[Dict[str, Any]], slots: Sequence[PortfolioSlot]) -> Dict[str, Any]:
     raw = dict(previous_state or {})
     raw_slots = raw.get("slots") if str(raw.get("version") or "") == STATE_VERSION else {}
     if not isinstance(raw_slots, dict):
         raw_slots = {}
+    migrated_active_state = _migrate_legacy_passive_xau_state_to_active(raw_slots)
     normalized_slots: dict[str, Dict[str, Any]] = {}
     reserved_symbols: set[str] = set()
     for slot in slots:
-        slot_state = _normalize_slot_state(slot, raw_slots.get(slot.slot_id))
+        raw_slot_state = raw_slots.get(slot.slot_id)
+        if slot.slot_id == MIGRATED_ACTIVE_SLOT_ID and not isinstance(raw_slot_state, dict):
+            raw_slot_state = migrated_active_state
+        slot_state = _normalize_slot_state(slot, raw_slot_state)
         state_symbol = _normalize_symbol(slot_state.get("symbol"))
         if slot.kind == "active" and state_symbol in reserved_symbols:
             slot_state = _clear_active_slot_state(slot_state)
@@ -1634,6 +1691,197 @@ def _active_screening_close_prices(candidate: Dict[str, Any], reference_price: O
     return close_prices
 
 
+def _decision_from_position_or_state(
+    *,
+    position: Optional[Dict[str, Any]],
+    slot_state: Dict[str, Any],
+) -> Optional[str]:
+    direction = _position_direction(position)
+    if direction == "long":
+        return "LONG"
+    if direction == "short":
+        return "SHORT"
+    return _normalize_ai_decision(slot_state.get("last_ai_decision"))
+
+
+def _active_rebalance_metrics(symbol: str, close_prices: Sequence[Any]) -> Dict[str, Any]:
+    metrics = calculate_close_range_volatility_metrics(symbol, close_prices)
+    return {
+        key: value
+        for key, value in metrics.items()
+        if key
+        in {
+            "close_count",
+            "first_close",
+            "last_close",
+            "min_close",
+            "max_close",
+            "close_range_midpoint",
+            "close_range_volatility",
+            "close_range_volatility_pct",
+            "net_return_pct",
+            "screening_direction",
+            "ranking_metric",
+            "ranking_formula",
+        }
+    }
+
+
+def _active_rebalance_candidate_payload(
+    *,
+    symbol: str,
+    decision: str,
+    reference_price: float,
+    close_prices: Sequence[Any],
+    timeframe: str,
+    expected_count: int,
+    metrics: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    normalized_symbol = _normalize_symbol(symbol)
+    normalized_decision = _normalize_ai_decision(decision)
+    normalized_timeframe = str(timeframe or DEFAULT_AI_PROMPT_TIMEFRAME).strip() or DEFAULT_AI_PROMPT_TIMEFRAME
+    if not normalized_symbol:
+        raise ValueError("active rebalance candidate symbol is required")
+    if normalized_decision is None:
+        raise ValueError(f"active rebalance decision is unavailable for {normalized_symbol}")
+    normalized_reference_price = _format_price(reference_price)
+    if normalized_reference_price is None:
+        raise ValueError(f"active rebalance reference price is unavailable for {normalized_symbol}")
+
+    prices: list[float] = []
+    for value in close_prices or []:
+        parsed = _format_price(value)
+        if parsed is None:
+            raise ValueError(f"invalid active rebalance close price for {normalized_symbol}")
+        prices.append(parsed)
+    required_count = max(1, int(expected_count))
+    if len(prices) < required_count:
+        raise ValueError(
+            f"not enough active rebalance close prices for {normalized_symbol}: "
+            f"have={len(prices)} need={required_count}"
+        )
+    prices = prices[-required_count:]
+    if prices:
+        prices[-1] = normalized_reference_price
+
+    derived_metrics = _active_rebalance_metrics(normalized_symbol, prices)
+    if isinstance(metrics, dict):
+        for key, value in metrics.items():
+            if key != "close_prices":
+                derived_metrics.setdefault(str(key), value)
+    return {
+        "symbol": normalized_symbol,
+        "decision": normalized_decision,
+        "reference_price": normalized_reference_price,
+        "timeframes": {normalized_timeframe: prices},
+        "metrics": derived_metrics,
+    }
+
+
+def _active_rebalance_current_payload(
+    *,
+    current_symbol: str,
+    position: Dict[str, Any],
+    slot_state: Dict[str, Any],
+    reference_price: float,
+    config: Dict[str, Any],
+    as_of_ms: int,
+) -> Dict[str, Any]:
+    decision = _decision_from_position_or_state(position=position, slot_state=slot_state)
+    if decision is None:
+        raise ValueError(f"current active direction is unavailable for {current_symbol}")
+    market_context = _fetch_prompt_market_context(
+        symbol=current_symbol,
+        ai_prompt_timeframe=str(config["ai_prompt_timeframe"]),
+        ai_prompt_candle_count=int(config["ai_prompt_candle_count"]),
+        as_of_ms=as_of_ms,
+        reference_price=reference_price,
+    )
+    timeframe = str(market_context.get("ai_prompt_timeframe") or config["ai_prompt_timeframe"])
+    close_prices = list((market_context.get("timeframes") or {}).get(timeframe) or [])
+    return _active_rebalance_candidate_payload(
+        symbol=current_symbol,
+        decision=decision,
+        reference_price=reference_price,
+        close_prices=close_prices,
+        timeframe=timeframe,
+        expected_count=int(config["ai_prompt_candle_count"]),
+    )
+
+
+def _active_rebalance_screened_payload(
+    *,
+    candidate: Dict[str, Any],
+    reference_price: float,
+    config: Dict[str, Any],
+) -> Dict[str, Any]:
+    selected = (candidate.get("selection") or {}).get("selected") if isinstance(candidate.get("selection"), dict) else {}
+    selected_metrics = selected if isinstance(selected, dict) else {}
+    return _active_rebalance_candidate_payload(
+        symbol=str(candidate.get("symbol") or ""),
+        decision=str(candidate.get("screening_decision") or ""),
+        reference_price=reference_price,
+        close_prices=_active_screening_close_prices(candidate, reference_price),
+        timeframe=str(config["ai_prompt_timeframe"]),
+        expected_count=int(config["ai_prompt_candle_count"]),
+        metrics=selected_metrics,
+    )
+
+
+def _selected_rebalance_close_prices(payload: Optional[Dict[str, Any]], timeframe: str) -> list[float]:
+    if not isinstance(payload, dict):
+        return []
+    timeframes = payload.get("timeframes")
+    if not isinstance(timeframes, dict):
+        return []
+    values = timeframes.get(timeframe) or next(iter(timeframes.values()), [])
+    if isinstance(values, (str, bytes)) or not isinstance(values, (list, tuple)):
+        return []
+    close_prices: list[float] = []
+    for value in values:
+        parsed = _format_price(value)
+        if parsed is not None:
+            close_prices.append(parsed)
+    return close_prices
+
+
+def _evaluate_active_rebalance_or_none(
+    *,
+    slot: PortfolioSlot,
+    current_payload: Dict[str, Any],
+    candidate_payload: Dict[str, Any],
+    config: Dict[str, Any],
+    cycle_dir_factory: CycleDirFactory,
+) -> tuple[Optional[str], Dict[str, Any], Optional[str]]:
+    analysis: Dict[str, Any] = {}
+    try:
+        slot_dir = _slot_artifact_dir(cycle_dir_factory(), slot.slot_id)
+        selection = evaluate_active_rebalance_symbol(
+            cycle_dir=slot_dir,
+            candidates=[current_payload, candidate_payload],
+            timeframe=str(config["ai_prompt_timeframe"]),
+            candle_count=int(config["ai_prompt_candle_count"]),
+            reasoning_effort=str(config["deepseek_reasoning_effort"]),
+            model=str(config["deepseek_model"]),
+            max_tokens=int(config["deepseek_max_tokens"]),
+            timeout_seconds=float(config["deepseek_timeout_seconds"]),
+            analysis_sink=analysis,
+            decision_mode="active_rebalance",
+        )
+    except Exception as exc:
+        logger.warning(
+            "Active rebalance DeepSeek selection failed | %s",
+            format_log_details({"slot_id": slot.slot_id, "error": str(exc)}),
+            exc_info=True,
+        )
+        return None, {"error": str(exc)}, str(exc)
+
+    selected_symbol = _normalize_symbol(getattr(selection, "selected_symbol", "") if selection is not None else "")
+    if not selected_symbol:
+        return None, analysis, "active_rebalance_selection_failed"
+    return selected_symbol, analysis, None
+
+
 def _evaluate_active_direction_or_none(
     *,
     slot: PortfolioSlot,
@@ -1697,6 +1945,9 @@ def _emit_active_screening_after(
             "position": result.get("position"),
             "position_before": calculate_position_metrics(position_before) if isinstance(position_before, dict) else None,
             "screener": result.get("screener"),
+            "selected_symbol": result.get("selected_symbol"),
+            "active_rebalance_selection": result.get("active_rebalance_selection"),
+            "active_rebalance_analysis": result.get("active_rebalance_analysis"),
             "ai_decision": result.get("ai_decision"),
             "ai_analysis": result.get("ai_analysis"),
             "entered_at": result.get("entered_at"),
@@ -1886,6 +2137,9 @@ def _slot_result_base(slot: PortfolioSlot, symbol: Optional[str]) -> Dict[str, A
         "screener": None,
         "candidate_symbol": None,
         "previous_symbol": None,
+        "selected_symbol": None,
+        "active_rebalance_selection": None,
+        "active_rebalance_analysis": None,
         "close_prices": None,
         "entered_at": None,
         "last_active_rank_checked_at": None,
@@ -2275,6 +2529,9 @@ def _run_active_slot(
             _persist_screener_output(slot_dir, screener_output)
         _record_active_screening_result(result, candidate)
 
+        current_rebalance_payload: Optional[Dict[str, Any]] = None
+        candidate_rebalance_payload: Optional[Dict[str, Any]] = None
+        selected_rebalance_symbol: Optional[str] = None
         candidate_reference_price = (
             reference_price if candidate_symbol == current_symbol else _reference_price(candidate_symbol)
         )
@@ -2310,6 +2567,152 @@ def _run_active_slot(
                 position_before=position,
             )
             return result, updated_state, current_symbol
+
+        if not active_mode_changed and candidate_symbol != current_symbol:
+            try:
+                current_rebalance_payload = _active_rebalance_current_payload(
+                    current_symbol=current_symbol,
+                    position=position,
+                    slot_state=tracked_state,
+                    reference_price=reference_price,
+                    config=config,
+                    as_of_ms=as_of_ms,
+                )
+                candidate_rebalance_payload = _active_rebalance_screened_payload(
+                    candidate=candidate,
+                    reference_price=candidate_reference_price,
+                    config=config,
+                )
+            except Exception as exc:
+                stop_sync = _sync_fixed_stop_loss(
+                    api_key=api_key,
+                    api_secret=api_secret,
+                    symbol=current_symbol,
+                    position=position,
+                    stop_loss_pct=float(config["stop_loss_pct"]),
+                )
+                result["position"] = calculate_position_metrics(position)
+                result["stop_sync"] = stop_sync
+                result["success"] = bool(stop_sync.get("success"))
+                result["action"] = (
+                    "active_rebalance_review_failed_position_kept" if result["success"] else "stop_loss_sync_failed"
+                )
+                result["error"] = str(exc)
+                result["symbol"] = current_symbol
+                result["current_price"] = reference_price
+                updated_state = dict(tracked_state)
+                updated_state["symbol"] = current_symbol
+                _emit_active_screening_after(
+                    notification_callback=notification_callback,
+                    slot=slot,
+                    candidate=candidate,
+                    result=result,
+                    reference_price=reference_price,
+                    trigger_info=trigger_info,
+                    config=config,
+                    position_before=position,
+                )
+                return result, updated_state, current_symbol
+
+            selected_rebalance_symbol, rebalance_analysis, rebalance_error = _evaluate_active_rebalance_or_none(
+                slot=slot,
+                current_payload=current_rebalance_payload,
+                candidate_payload=candidate_rebalance_payload,
+                config=config,
+                cycle_dir_factory=cycle_dir_factory,
+            )
+            result["active_rebalance_analysis"] = rebalance_analysis
+            result["active_rebalance_selection"] = (
+                rebalance_analysis.get("decision") if isinstance(rebalance_analysis, dict) else None
+            )
+            result["selected_symbol"] = selected_rebalance_symbol
+            if rebalance_error or selected_rebalance_symbol is None:
+                stop_sync = _sync_fixed_stop_loss(
+                    api_key=api_key,
+                    api_secret=api_secret,
+                    symbol=current_symbol,
+                    position=position,
+                    stop_loss_pct=float(config["stop_loss_pct"]),
+                )
+                result["position"] = calculate_position_metrics(position)
+                result["stop_sync"] = stop_sync
+                result["success"] = bool(stop_sync.get("success"))
+                result["action"] = (
+                    "active_rebalance_selection_failed_position_kept"
+                    if result["success"]
+                    else "stop_loss_sync_failed"
+                )
+                result["error"] = rebalance_error or "active_rebalance_selection_failed"
+                result["symbol"] = current_symbol
+                result["current_price"] = reference_price
+                result["close_prices"] = _selected_rebalance_close_prices(
+                    current_rebalance_payload,
+                    str(config["ai_prompt_timeframe"]),
+                )
+                updated_state = dict(tracked_state)
+                updated_state["symbol"] = current_symbol
+                _emit_active_screening_after(
+                    notification_callback=notification_callback,
+                    slot=slot,
+                    candidate=candidate,
+                    result=result,
+                    reference_price=reference_price,
+                    trigger_info=trigger_info,
+                    config=config,
+                    position_before=position,
+                )
+                return result, updated_state, current_symbol
+
+            if selected_rebalance_symbol == current_symbol:
+                candidate_symbol = current_symbol
+                candidate_reference_price = reference_price
+                result["symbol"] = current_symbol
+                result["current_price"] = reference_price
+                result["close_prices"] = _selected_rebalance_close_prices(
+                    current_rebalance_payload,
+                    str(config["ai_prompt_timeframe"]),
+                )
+            elif selected_rebalance_symbol != candidate_symbol:
+                stop_sync = _sync_fixed_stop_loss(
+                    api_key=api_key,
+                    api_secret=api_secret,
+                    symbol=current_symbol,
+                    position=position,
+                    stop_loss_pct=float(config["stop_loss_pct"]),
+                )
+                result["position"] = calculate_position_metrics(position)
+                result["stop_sync"] = stop_sync
+                result["success"] = bool(stop_sync.get("success"))
+                result["action"] = (
+                    "active_rebalance_selection_failed_position_kept"
+                    if result["success"]
+                    else "stop_loss_sync_failed"
+                )
+                result["error"] = "active_rebalance_selected_unknown_symbol"
+                result["symbol"] = current_symbol
+                result["current_price"] = reference_price
+                result["close_prices"] = _selected_rebalance_close_prices(
+                    current_rebalance_payload,
+                    str(config["ai_prompt_timeframe"]),
+                )
+                updated_state = dict(tracked_state)
+                updated_state["symbol"] = current_symbol
+                _emit_active_screening_after(
+                    notification_callback=notification_callback,
+                    slot=slot,
+                    candidate=candidate,
+                    result=result,
+                    reference_price=reference_price,
+                    trigger_info=trigger_info,
+                    config=config,
+                    position_before=position,
+                )
+                return result, updated_state, current_symbol
+            else:
+                result["close_prices"] = _selected_rebalance_close_prices(
+                    candidate_rebalance_payload,
+                    str(config["ai_prompt_timeframe"]),
+                )
 
         decision, ai_analysis, prompt_payload, ai_error = _evaluate_active_direction_or_none(
             slot=slot,
@@ -2478,7 +2881,11 @@ def _run_active_slot(
         result["position"] = execution.get("position")
         if entry_opened and bool(execution.get("success")):
             result["success"] = True
-            result["action"] = "switched_active_position_by_deepseek"
+            result["action"] = (
+                "switched_active_position_by_rebalancer"
+                if selected_rebalance_symbol == candidate_symbol
+                else "switched_active_position_by_deepseek"
+            )
             updated_state = _mark_active_screening_mode_current(
                 slot,
                 _update_slot_trigger_state(

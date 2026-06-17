@@ -50,11 +50,15 @@ ACTION_LABELS = {
     "kept_position_by_ai": "Position kept by AI",
     "kept_position_by_screening": "Position kept by screening",
     "kept_active_position_until_stop_loss": "Active position held until stop-loss",
+    "active_rebalance_review_failed_position_kept": "Active rebalance review failed, position kept",
+    "active_rebalance_position_kept": "Active position kept after rebalance review",
+    "active_rebalance_selection_failed_position_kept": "Active rebalance selection failed, position kept",
     "active_rank_review_failed_position_kept": "Active DeepSeek review failed, position kept",
     "active_rank_review_position_kept": "Active position kept after DeepSeek review",
     "active_ai_decision_failed": "Active DeepSeek direction failed",
     "opened_new_position": "Opened new position",
     "switched_active_position_by_deepseek": "Switched active position by DeepSeek direction",
+    "switched_active_position_by_rebalancer": "Switched active position by DeepSeek rebalance selection",
     "reversed_position": "Reversed position",
     "increased_position": "Increased position",
     "reduced_position": "Reduced position",
@@ -375,6 +379,9 @@ class TradingScheduler:
                     self._format_html_line("Candidate", payload.get("candidate_symbol"), code=True)
                     if payload.get("candidate_symbol")
                     else "",
+                    self._format_html_line("Selected", payload.get("selected_symbol"), code=True)
+                    if payload.get("selected_symbol")
+                    else "",
                     self._format_html_line("Screen Dir", payload.get("screening_decision"), code=True)
                     if payload.get("screening_decision")
                     else "",
@@ -549,14 +556,20 @@ class TradingScheduler:
             return False
         return bool(sent)
 
-    def _notify_telegram_event(self, event_name: str, payload: Dict[str, Any]) -> None:
+    def _notify_telegram_event(self, event_name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         if event_name == "ai_cycle_before":
             sent = self._emit_telegram_text(self._build_ai_cycle_before_message(payload))
             logger.info(
                 "Telegram event dispatched | %s",
                 format_log_details({"event": event_name, "sent": sent, "symbol": payload.get("symbol")}),
             )
-            return
+            return {
+                "event": event_name,
+                "handled": True,
+                "sent": sent,
+                "chart_sent": None,
+                "symbol": payload.get("symbol"),
+            }
         if event_name == "ai_cycle_after":
             sent = self._emit_telegram_text(self._build_ai_cycle_after_message(payload))
             chart_sent = self._emit_telegram_close_price_chart(payload)
@@ -572,7 +585,13 @@ class TradingScheduler:
                     }
                 ),
             )
-            return
+            return {
+                "event": event_name,
+                "handled": True,
+                "sent": sent,
+                "chart_sent": chart_sent,
+                "symbol": payload.get("symbol"),
+            }
         if event_name == "active_screening_after":
             sent = self._emit_telegram_text(self._build_active_screening_after_message(payload))
             chart_sent = self._emit_telegram_close_price_chart(payload)
@@ -588,6 +607,20 @@ class TradingScheduler:
                     }
                 ),
             )
+            return {
+                "event": event_name,
+                "handled": True,
+                "sent": sent,
+                "chart_sent": chart_sent,
+                "symbol": payload.get("symbol"),
+            }
+        return {
+            "event": event_name,
+            "handled": False,
+            "sent": False,
+            "chart_sent": None,
+            "symbol": payload.get("symbol"),
+        }
 
     def _maybe_send_cycle_notifications(self, cycle_time: datetime, result: Dict[str, Any]) -> None:
         if (

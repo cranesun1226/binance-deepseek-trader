@@ -7,7 +7,7 @@ from src.strategy import portfolio_strategy
 class PortfolioHelperTests(unittest.TestCase):
     def test_default_config_builds_four_slots_in_priority_order(self):
         config = {
-            "passive_symbols": ["CLUSDT", "BTCUSDT", "XAUUSDT"],
+            "passive_symbols": ["CLUSDT", "BTCUSDT"],
         }
 
         slots = portfolio_strategy._build_portfolio_slots(config)
@@ -15,22 +15,23 @@ class PortfolioHelperTests(unittest.TestCase):
         self.assertEqual([slot.slot_id for slot in slots], [
             "passive_cl",
             "passive_btc",
-            "passive_xau",
             "active_1",
+            "active_2",
         ])
-        self.assertEqual([slot.symbol for slot in slots[:3]], ["CLUSDT", "BTCUSDT", "XAUUSDT"])
+        self.assertEqual([slot.symbol for slot in slots[:2]], ["CLUSDT", "BTCUSDT"])
         self.assertEqual([slot.target_margin_ratio for slot in slots], [0.25] * 4)
+        self.assertEqual(slots[2].active_screening_mode, "tradfi")
         self.assertEqual(slots[3].active_screening_mode, "tradfi")
 
-    def test_passive_symbol_normalization_requires_three_unique_symbols(self):
+    def test_passive_symbol_normalization_requires_two_unique_symbols(self):
         with patch("src.strategy.portfolio_strategy.logger") as mocked_logger:
             too_many = portfolio_strategy._normalize_passive_symbols(
                 ["DOGEUSDT", "SOLUSDT", "ADAUSDT", "BNBUSDT"]
             )
-            duplicate = portfolio_strategy._normalize_passive_symbols(["CLUSDT", "BTCUSDT", "BTCUSDT"])
+            duplicate = portfolio_strategy._normalize_passive_symbols(["CLUSDT", "CLUSDT"])
 
-        self.assertEqual(too_many, ["CLUSDT", "BTCUSDT", "XAUUSDT"])
-        self.assertEqual(duplicate, ["CLUSDT", "BTCUSDT", "XAUUSDT"])
+        self.assertEqual(too_many, ["CLUSDT", "BTCUSDT"])
+        self.assertEqual(duplicate, ["CLUSDT", "BTCUSDT"])
         self.assertEqual(mocked_logger.warning.call_count, 2)
 
     def test_deepseek_reasoning_effort_normalization_matches_api_values(self):
@@ -299,7 +300,7 @@ class PortfolioHelperTests(unittest.TestCase):
 
     def test_legacy_removed_slots_are_dropped_from_normalized_state(self):
         config = {
-            "passive_symbols": ["CLUSDT", "BTCUSDT", "XAUUSDT"],
+            "passive_symbols": ["CLUSDT", "BTCUSDT"],
         }
         slots = portfolio_strategy._build_portfolio_slots(config)
         state = portfolio_strategy._normalize_portfolio_state(
@@ -317,13 +318,63 @@ class PortfolioHelperTests(unittest.TestCase):
         )
 
         self.assertEqual(state["slots"]["active_1"]["symbol"], "ESUSDT")
-        self.assertEqual(set(state["slots"]), {"passive_cl", "passive_btc", "passive_xau", "active_1"})
+        self.assertEqual(state["slots"]["active_2"]["symbol"], None)
+        self.assertEqual(set(state["slots"]), {"passive_cl", "passive_btc", "active_1", "active_2"})
         self.assertNotIn("passive_eth", state["slots"])
-        self.assertNotIn("active_2", state["slots"])
+        self.assertNotIn("passive_xau", state["slots"])
+
+    def test_legacy_passive_xau_state_migrates_to_second_tradfi_active_slot(self):
+        config = {
+            "passive_symbols": ["CLUSDT", "BTCUSDT"],
+        }
+        slots = portfolio_strategy._build_portfolio_slots(config)
+        state = portfolio_strategy._normalize_portfolio_state(
+            {
+                "version": portfolio_strategy.STATE_VERSION,
+                "slots": {
+                    "passive_xau": {
+                        "symbol": "XAUUSDT",
+                        "last_ai_decision": "LONG",
+                        "last_ai_trigger_price": 4300.0,
+                    },
+                },
+            },
+            slots,
+        )
+
+        active2_state = state["slots"]["active_2"]
+        self.assertEqual(active2_state["kind"], "active")
+        self.assertEqual(active2_state["symbol"], "XAUUSDT")
+        self.assertEqual(active2_state["last_ai_decision"], "LONG")
+        self.assertEqual(active2_state["last_ai_trigger_price"], 4300.0)
+        self.assertEqual(active2_state["active_screening_mode"], "tradfi")
+        self.assertTrue(active2_state["active_screening_mode_changed"])
+        self.assertNotIn("passive_xau", state["slots"])
+
+    def test_legacy_passive_xau_state_does_not_override_existing_active2_state(self):
+        config = {
+            "passive_symbols": ["CLUSDT", "BTCUSDT"],
+        }
+        slots = portfolio_strategy._build_portfolio_slots(config)
+        state = portfolio_strategy._normalize_portfolio_state(
+            {
+                "version": portfolio_strategy.STATE_VERSION,
+                "slots": {
+                    "passive_xau": {"symbol": "XAUUSDT", "last_ai_decision": "LONG"},
+                    "active_2": {"symbol": "ARMUSDT", "last_ai_decision": "SHORT"},
+                },
+            },
+            slots,
+        )
+
+        active2_state = state["slots"]["active_2"]
+        self.assertEqual(active2_state["symbol"], "ARMUSDT")
+        self.assertEqual(active2_state["last_ai_decision"], "SHORT")
+        self.assertNotIn("passive_xau", state["slots"])
 
     def test_active_recent_symbols_are_grouped_by_screening_universe(self):
         config = {
-            "passive_symbols": ["CLUSDT", "BTCUSDT", "XAUUSDT"],
+            "passive_symbols": ["CLUSDT", "BTCUSDT"],
         }
         slots = portfolio_strategy._build_portfolio_slots(config)
         state = portfolio_strategy._normalize_portfolio_state(
@@ -331,7 +382,7 @@ class PortfolioHelperTests(unittest.TestCase):
                 "version": portfolio_strategy.STATE_VERSION,
                 "slots": {
                     "active_1": {"symbol": "ESUSDT", "previous_active_symbol": "NQUSDT"},
-                    "active_2": {"symbol": "ESUSDT", "previous_active_symbol": "NQUSDT"},
+                    "active_2": {"symbol": "GCUSDT", "previous_active_symbol": "YMUSDT"},
                     "active_3": {"symbol": "GCUSDT"},
                     "active_4": {"previous_active_symbol": "YMUSDT"},
                 },
@@ -341,11 +392,11 @@ class PortfolioHelperTests(unittest.TestCase):
 
         grouped = portfolio_strategy._active_recent_symbols_by_mode(slots, state)
 
-        self.assertEqual(grouped["tradfi"], {"ESUSDT", "NQUSDT"})
+        self.assertEqual(grouped["tradfi"], {"ESUSDT", "NQUSDT", "GCUSDT", "YMUSDT"})
 
     def test_runtime_symbol_bans_are_normalized_and_excluded_from_active_screening(self):
         config = {
-            "passive_symbols": ["CLUSDT", "BTCUSDT", "XAUUSDT"],
+            "passive_symbols": ["CLUSDT", "BTCUSDT"],
         }
         slots = portfolio_strategy._build_portfolio_slots(config)
         state = portfolio_strategy._normalize_portfolio_state(
@@ -365,6 +416,7 @@ class PortfolioHelperTests(unittest.TestCase):
             banned_symbols=portfolio_strategy._runtime_banned_symbols(state),
         )
         self.assertIn("SKHYNIXUSDT", excluded)
+        self.assertNotIn("XAUUSDT", excluded)
 
     def test_record_symbol_ban_updates_existing_scheduler_state_entry(self):
         state = {
@@ -401,7 +453,7 @@ class PortfolioHelperTests(unittest.TestCase):
 
     def test_legacy_active1_crypto_state_is_marked_for_tradfi_migration(self):
         config = {
-            "passive_symbols": ["CLUSDT", "BTCUSDT", "XAUUSDT"],
+            "passive_symbols": ["CLUSDT", "BTCUSDT"],
         }
         slots = portfolio_strategy._build_portfolio_slots(config)
         state = portfolio_strategy._normalize_portfolio_state(

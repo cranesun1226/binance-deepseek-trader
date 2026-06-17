@@ -4,7 +4,7 @@
 cycle_interval_seconds: 60
 
 # Passive decision trigger: re-evaluate passive slots when price moves +/-
-# this percent from that slot's last decision anchor. The active slot ignores this
+# this percent from that slot's last decision anchor. Active slots ignore this
 # price trigger while a position is open.
 trigger_pct_usdt: 1.0
 
@@ -21,7 +21,7 @@ deepseek_timeout_seconds: 300.0
 
 # Portfolio allocation
 # All 4 slots target 1/4 margin allocation. Passive fixed-symbol slots use
-# 2x leverage; the single active slot also uses 2x leverage.
+# 2x leverage; the two active slots also use 2x leverage.
 passive_leverage: 2
 active_leverage: 2
 capital_usage_ratio: 0.99
@@ -33,9 +33,8 @@ active_rescreen_interval_hours: 24
 passive_symbols:
   - CLUSDT
   - BTCUSDT
-  - XAUUSDT
 
-# The single active slot screens TradFi USDT perpetuals only.
+# The two active slots screen TradFi USDT perpetuals only.
 # Active candidates are ranked by close_range_volatility:
 # abs(last_close-first_close)/((last_close+first_close)/2), using
 # ai_prompt_candle_count closes on ai_prompt_timeframe.
@@ -43,15 +42,17 @@ passive_symbols:
 # last_close < first_close; this screening direction is metadata only. Flat
 # candidates are skipped, and DeepSeek trader decides the actual LONG/SHORT
 # direction before every active entry or 24h review execution.
-# When the active slot needs a new symbol, it excludes its current and
-# immediately previous symbols from the same TradFi active universe.
+# When an active slot needs a new symbol, it excludes its current and
+# immediately previous symbols, plus the other active slot's current and
+# previous symbols, from the same TradFi active universe.
 # Once an active position is open, it is held until the fixed 4% stop loss,
 # external/manual position cleanup, or the 24h review re-ranks TradFi
 # candidates while allowing the current symbol. If the current symbol remains
 # top-ranked, DeepSeek trader reviews its direction and rebalances/reverses as
-# needed; if a new symbol is top-ranked, the current position is closed and the
-# new symbol opens in DeepSeek trader's direction. The active slot does not use
-# the 1% decision trigger while holding a position.
+# needed. If a new symbol is top-ranked, DeepSeek rebalancer first chooses
+# whether to keep the current symbol or switch to the new candidate; the
+# current position is only closed when the new candidate is selected. Active
+# slots do not use the 1% decision trigger while holding a position.
 # Before ranking, the latest returned 2 klines are filtered by high/low range
 # change <= 4%; this intentionally includes the currently forming 1h candle
 # and the immediately preceding candle, not only fully closed candles.
