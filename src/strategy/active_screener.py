@@ -26,7 +26,10 @@ TREND_CANDIDATE_REPORT_LIMIT = 10
 TREND_REJECTION_LOG_LIMIT = 20
 TREND_STRENGTH_CAP = 100.0
 TREND_RANKING_METRIC = "trend_score"
-TREND_RANKING_FORMULA = "weighted percentile score of trend strength, r_squared, efficiency, and consistency metrics"
+TREND_RANKING_FORMULA = (
+    "weighted percentile score of trend strength, r_squared, efficiency, directional/daily consistency, "
+    "adverse excursion, and trend magnitude"
+)
 HOURLY_CANDLES_PER_DAY = 24
 HOURLY_CANDLES_PER_WEEK = HOURLY_CANDLES_PER_DAY * 7
 ENTRY_EXTREME_LOOKBACK = 24
@@ -35,14 +38,13 @@ EPSILON = 1e-12
 MANAGED_SCREENING_DECISIONS = {"LONG", "SHORT"}
 
 TREND_SCORE_WEIGHTS: dict[str, float] = {
-    "trend_strength": 0.22,
-    "r_squared": 0.18,
-    "efficiency": 0.18,
-    "directional_consistency": 0.15,
-    "weekly_consistency": 0.12,
-    "daily_consistency": 0.07,
-    "adverse_score": 0.05,
-    "trend_magnitude": 0.03,
+    "trend_strength": 0.20,
+    "r_squared": 0.16,
+    "efficiency": 0.16,
+    "directional_consistency": 0.17,
+    "daily_consistency": 0.12,
+    "adverse_score": 0.14,
+    "trend_magnitude": 0.05,
 }
 
 

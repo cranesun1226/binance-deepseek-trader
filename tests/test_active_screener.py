@@ -4,6 +4,7 @@ import unittest
 from src.strategy.active_screener import (
     ENTRY_EXTREME_DISTANCE_LIMIT,
     ENTRY_EXTREME_LOOKBACK,
+    TREND_SCORE_WEIGHTS,
     _build_trend_candidate,
     build_usdt_perpetual_universe,
     build_usdt_tradfi_perpetual_universe,
@@ -33,6 +34,22 @@ def _kline(index, *, close, high=None, low=None):
 
 
 class ActiveScreenerTests(unittest.TestCase):
+    def test_trend_score_weights_balance_return_quality_and_win_rate_inputs(self):
+        self.assertAlmostEqual(sum(TREND_SCORE_WEIGHTS.values()), 1.0)
+        self.assertEqual(
+            TREND_SCORE_WEIGHTS,
+            {
+                "trend_strength": 0.20,
+                "r_squared": 0.16,
+                "efficiency": 0.16,
+                "directional_consistency": 0.17,
+                "daily_consistency": 0.12,
+                "adverse_score": 0.14,
+                "trend_magnitude": 0.05,
+            },
+        )
+        self.assertNotIn("weekly_consistency", TREND_SCORE_WEIGHTS)
+
     def test_trend_metrics_identifies_orderly_long_trend(self):
         metrics = calculate_trend_metrics("LONGUSDT", _trend_prices(rate=0.001, wiggle=0.001))
 

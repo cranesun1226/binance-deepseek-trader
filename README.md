@@ -19,9 +19,13 @@ The screener fetches `ai_prompt_candle_count` closes on `ai_prompt_timeframe`, d
 - R squared
 - path efficiency
 - directional consistency
-- weekly and daily consistency
+- daily consistency
 - adverse excursion score
 - trend magnitude
+
+Weekly consistency is still recorded as diagnostic metadata, but it is not part of
+the default score because the default 168 one-hour window creates a single
+weekly segment, which mostly duplicates the endpoint trend filter.
 
 The fitted slope defines the screening direction:
 

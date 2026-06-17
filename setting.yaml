@@ -32,8 +32,10 @@ active_rescreen_interval_hours: 24
 # Active candidates are ranked by one-week trend quality over
 # ai_prompt_candle_count closes on ai_prompt_timeframe. The trend screener
 # records LONG or SHORT from the fitted log-price slope, scores direction
-# consistency with R-squared, efficiency, adverse excursion, and daily/weekly
-# consistency, and skips flat or inconsistent endpoint paths.
+# consistency with R-squared, efficiency, adverse excursion, and daily
+# consistency, and skips flat or inconsistent endpoint paths. Weekly
+# consistency is retained as diagnostic metadata, but excluded from the
+# default score because the default one-week window has only one weekly segment.
 #
 # Before ranking, the screener applies a directional 24-candle entry filter
 # against the live lookup price:
