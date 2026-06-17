@@ -69,6 +69,8 @@ ACTION_LABELS = {
     "switch_close_failed": "Active DeepSeek switch close failed",
     "entry_order_failed": "Entry order failed",
     "stop_loss_sync_failed": "Stop-loss sync failed",
+    "post_trade_stop_loss_sync_failed_closed": "Stop-loss sync failed, position closed",
+    "post_trade_stop_loss_sync_failed_close_failed": "Stop-loss sync failed, close failed",
     "active_rank_switch_entry_failed": "Active DeepSeek switch entry failed",
     "reference_price_unavailable": "Reference price unavailable",
 }
@@ -143,11 +145,25 @@ class TradingScheduler:
         return default_state
 
     def save_state(self) -> None:
+        temp_path = f"{self.state_file_path}.tmp.{os.getpid()}"
         try:
-            with open(self.state_file_path, "w", encoding="utf-8") as file_obj:
+            state_dir = os.path.dirname(self.state_file_path)
+            if state_dir:
+                os.makedirs(state_dir, exist_ok=True)
+            with open(temp_path, "w", encoding="utf-8") as file_obj:
                 json.dump(self.state, file_obj, indent=2, ensure_ascii=False)
+                file_obj.write("\n")
+                file_obj.flush()
+                os.fsync(file_obj.fileno())
+            os.replace(temp_path, self.state_file_path)
         except Exception as exc:
             logger.error("Error saving scheduler state: %s", exc)
+            try:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+            except OSError:
+                pass
+            raise RuntimeError(f"Error saving scheduler state: {exc}") from exc
 
     def _merge_state_update(self, update: Optional[Dict[str, Any]]) -> None:
         if isinstance(update, dict):

@@ -6,9 +6,10 @@ import hashlib
 import hmac
 import math
 import time
+import uuid
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_UP
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urlencode
 
 try:
@@ -45,6 +46,11 @@ PERMANENT_SYMBOL_RESTRICTION_MESSAGE_PATTERNS = (
     "restricted in your country",
 )
 NON_RETRYABLE_ENTRY_ERROR_CODES = {-1111, -4164, -4411, *PERMANENT_SYMBOL_RESTRICTION_ERROR_CODES}
+CLIENT_ORDER_ID_PREFIX = "bdt"
+CLIENT_ALGO_ID_PREFIX = "bdta"
+UNKNOWN_EXECUTION_RECONCILE_ATTEMPTS = 5
+UNKNOWN_EXECUTION_RECONCILE_SLEEP_SECONDS = 0.35
+INEFFECTIVE_RECONCILED_ORDER_STATUSES = {"CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED"}
 
 # Numeric helpers and exchange metadata.
 
@@ -364,6 +370,66 @@ def _parse_binance_error(payload: Any) -> tuple[Optional[int], str]:
     return normalized_code, str(payload.get("msg") or "")
 
 
+def _new_client_id(prefix: str) -> str:
+    normalized_prefix = "".join(ch for ch in str(prefix or "").lower() if ch.isalnum() or ch in {"_", "-"})
+    if not normalized_prefix:
+        normalized_prefix = CLIENT_ORDER_ID_PREFIX
+    return f"{normalized_prefix}_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"[:36]
+
+
+def _reconcile_unknown_execution(
+    *,
+    operation_name: str,
+    reconcile_on_unknown: Callable[[], Optional[Dict[str, Any]]],
+) -> Optional[Dict[str, Any]]:
+    for attempt in range(1, UNKNOWN_EXECUTION_RECONCILE_ATTEMPTS + 1):
+        time.sleep(max(0.0, UNKNOWN_EXECUTION_RECONCILE_SLEEP_SECONDS))
+        try:
+            payload = reconcile_on_unknown()
+        except Exception as exc:
+            logger.warning(
+                "%s: unknown execution reconciliation query failed | %s",
+                operation_name,
+                format_log_details({"attempt": attempt, "error": str(exc)}),
+            )
+            payload = None
+
+        if isinstance(payload, dict) and not _is_binance_error_payload(payload):
+            status = _extract_order_status(payload)
+            if status in INEFFECTIVE_RECONCILED_ORDER_STATUSES:
+                logger.warning(
+                    "%s: unknown execution query found ineffective order status | %s",
+                    operation_name,
+                    format_log_details(
+                        {
+                            "attempt": attempt,
+                            "order_id": payload.get("orderId") or payload.get("algoId"),
+                            "client_order_id": payload.get("clientOrderId"),
+                            "client_algo_id": payload.get("clientAlgoId"),
+                            "status": status,
+                        }
+                    ),
+                )
+                continue
+
+            logger.warning(
+                "%s: reconciled unknown execution status from Binance query | %s",
+                operation_name,
+                format_log_details(
+                    {
+                        "attempt": attempt,
+                        "order_id": payload.get("orderId") or payload.get("algoId"),
+                        "client_order_id": payload.get("clientOrderId"),
+                        "client_algo_id": payload.get("clientAlgoId"),
+                        "status": status,
+                    }
+                ),
+            )
+            return payload
+
+    return None
+
+
 def _signed_post_expect_key(
     path: str,
     *,
@@ -372,6 +438,7 @@ def _signed_post_expect_key(
     params: Sequence[Tuple[str, Any]],
     operation_name: str,
     pre_call_delay: float = 0.0,
+    reconcile_on_unknown: Optional[Callable[[], Optional[Dict[str, Any]]]] = None,
 ) -> tuple[Optional[Dict[str, Any]], Optional[int], str]:
     try:
         response = _signed_request(
@@ -385,6 +452,13 @@ def _signed_post_expect_key(
         )
         payload = response.json()
     except BinanceExecutionStatusUnknown as exc:
+        if reconcile_on_unknown is not None:
+            reconciled = _reconcile_unknown_execution(
+                operation_name=operation_name,
+                reconcile_on_unknown=reconcile_on_unknown,
+            )
+            if reconciled is not None:
+                return reconciled, None, ""
         return None, None, str(exc)
     except Exception as exc:
         return None, None, str(exc)
@@ -442,6 +516,53 @@ def _signed_get_json(
     except Exception as exc:
         logger.error("%s failed: %s", operation_name, exc)
         return None
+
+
+def _query_order_by_client_id(
+    api_key: str,
+    api_secret: str,
+    symbol: str,
+    client_order_id: str,
+) -> Optional[Dict[str, Any]]:
+    normalized_symbol = str(symbol or "").strip().upper()
+    normalized_client_order_id = str(client_order_id or "").strip()
+    if not normalized_symbol or not normalized_client_order_id:
+        return None
+
+    payload = _signed_get_json(
+        "/fapi/v1/order",
+        api_key=api_key,
+        api_secret=api_secret,
+        params=[
+            ("symbol", normalized_symbol),
+            ("origClientOrderId", normalized_client_order_id),
+        ],
+        operation_name=f"query_order_by_client_id({normalized_symbol},{normalized_client_order_id})",
+    )
+    if isinstance(payload, dict) and not _is_binance_error_payload(payload):
+        return payload
+    return None
+
+
+def _query_algo_order_by_client_id(
+    api_key: str,
+    api_secret: str,
+    client_algo_id: str,
+) -> Optional[Dict[str, Any]]:
+    normalized_client_algo_id = str(client_algo_id or "").strip()
+    if not normalized_client_algo_id:
+        return None
+
+    payload = _signed_get_json(
+        "/fapi/v1/algoOrder",
+        api_key=api_key,
+        api_secret=api_secret,
+        params=[("clientAlgoId", normalized_client_algo_id)],
+        operation_name=f"query_algo_order_by_client_id({normalized_client_algo_id})",
+    )
+    if isinstance(payload, dict) and not _is_binance_error_payload(payload):
+        return payload
+    return None
 
 
 def _binance_side_from_side(side: str) -> Optional[str]:
@@ -885,6 +1006,7 @@ def place_market_entry_order(
     last_msg = ""
     for attempt in range(1, ENTRY_ORDER_MAX_ATTEMPTS + 1):
         current_qty_text = decimal_to_str(current_qty)
+        client_order_id = _new_client_id(CLIENT_ORDER_ID_PREFIX)
         logger.info(
             "Placing market entry order | %s",
             format_log_details(
@@ -896,6 +1018,7 @@ def place_market_entry_order(
                     "leverage": leverage,
                     "attempt": attempt,
                     "max_attempts": ENTRY_ORDER_MAX_ATTEMPTS,
+                    "client_order_id": client_order_id,
                 }
             ),
         )
@@ -908,8 +1031,15 @@ def place_market_entry_order(
                 ("side", binance_side),
                 ("type", "MARKET"),
                 ("quantity", current_qty_text),
+                ("newClientOrderId", client_order_id),
             ],
             operation_name=f"place_market_entry_order({normalized_symbol})",
+            reconcile_on_unknown=lambda client_order_id=client_order_id: _query_order_by_client_id(
+                api_key,
+                api_secret,
+                normalized_symbol,
+                client_order_id,
+            ),
         )
         if order is not None:
             logger.info(
@@ -921,6 +1051,7 @@ def place_market_entry_order(
                         "qty": current_qty_text,
                         "attempt": attempt,
                         "order_id": order.get("orderId"),
+                        "client_order_id": order.get("clientOrderId") or client_order_id,
                         "status": order.get("status"),
                     }
                 ),
@@ -990,6 +1121,7 @@ def close_position(api_key: str, api_secret: str, symbol: str, side: str, qty: s
     if close_qty is None or close_qty <= 0:
         return True
 
+    client_order_id = _new_client_id(CLIENT_ORDER_ID_PREFIX)
     logger.info(
         "Closing position with reduce-only market order | %s",
         format_log_details(
@@ -999,6 +1131,7 @@ def close_position(api_key: str, api_secret: str, symbol: str, side: str, qty: s
                 "live_position_amt": live_position_amt,
                 "requested_qty": requested_qty,
                 "close_qty": decimal_to_str(close_qty),
+                "client_order_id": client_order_id,
             }
         ),
     )
@@ -1012,8 +1145,15 @@ def close_position(api_key: str, api_secret: str, symbol: str, side: str, qty: s
             ("type", "MARKET"),
             ("quantity", decimal_to_str(close_qty)),
             ("reduceOnly", "true"),
+            ("newClientOrderId", client_order_id),
         ],
         operation_name=f"close_position({normalized_symbol})",
+        reconcile_on_unknown=lambda client_order_id=client_order_id: _query_order_by_client_id(
+            api_key,
+            api_secret,
+            normalized_symbol,
+            client_order_id,
+        ),
     )
     if _order is not None:
         return True
@@ -1141,6 +1281,7 @@ def sync_existing_position_stop_loss(
                 "stop_loss": adjusted_stop,
             }
 
+    client_algo_id = _new_client_id(CLIENT_ALGO_ID_PREFIX)
     logger.info(
         "Syncing stop loss via algo order | %s",
         format_log_details(
@@ -1150,6 +1291,7 @@ def sync_existing_position_stop_loss(
                 "requested_stop_loss": stop_loss,
                 "current_stop_loss": current_stop_loss,
                 "adjusted_stop": adjusted_stop,
+                "client_algo_id": client_algo_id,
             }
         ),
     )
@@ -1169,8 +1311,14 @@ def sync_existing_position_stop_loss(
             ("closePosition", "true"),
             ("workingType", "CONTRACT_PRICE"),
             ("priceProtect", "TRUE"),
+            ("clientAlgoId", client_algo_id),
         ],
         operation_name=f"sync_stop_loss({normalized_symbol})",
+        reconcile_on_unknown=lambda client_algo_id=client_algo_id: _query_algo_order_by_client_id(
+            api_key,
+            api_secret,
+            client_algo_id,
+        ),
     )
     if order is None:
         logger.error(
@@ -1180,6 +1328,7 @@ def sync_existing_position_stop_loss(
                     "symbol": normalized_symbol,
                     "side": exit_side,
                     "trigger_price": adjusted_stop,
+                    "client_algo_id": client_algo_id,
                     "error_code": code,
                     "error_message": msg,
                 }
@@ -1201,6 +1350,7 @@ def sync_existing_position_stop_loss(
                 "side": exit_side,
                 "trigger_price": adjusted_stop,
                 "algo_id": order.get("algoId"),
+                "client_algo_id": order.get("clientAlgoId") or client_algo_id,
                 "status": _extract_order_status(order),
             }
         ),

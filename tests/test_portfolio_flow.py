@@ -146,6 +146,40 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertEqual(result["direction_verification"]["actual_direction"], "short")
         mocked_close.assert_called_once()
 
+    def test_post_trade_stop_loss_failure_closes_position_and_marks_failed(self):
+        stop_failure = {"success": False, "changed": False, "reason": "place_stop_loss_failed"}
+        close_result = {"success": True, "action": "closed_position", "symbol": "BTCUSDT", "qty": 2.0}
+
+        with patch(
+            "src.strategy.portfolio_strategy.get_position_snapshot",
+            return_value=_long_position("BTCUSDT"),
+        ), patch(
+            "src.strategy.portfolio_strategy._sync_fixed_stop_loss",
+            return_value=stop_failure,
+        ), patch(
+            "src.strategy.portfolio_strategy._close_existing_position",
+            return_value=close_result,
+        ) as mocked_close:
+            sync_result = portfolio_strategy._sync_position_after_trade(
+                api_key="key",
+                api_secret="secret",
+                symbol="BTCUSDT",
+                stop_loss_pct=0.04,
+                expected_decision="LONG",
+            )
+
+        merged = portfolio_strategy._merge_post_trade_sync_result(
+            {"success": True, "action": "opened_new_position"},
+            sync_result,
+        )
+
+        self.assertEqual(sync_result["stop_sync"], stop_failure)
+        self.assertEqual(sync_result["protection_verification"]["action"], "post_trade_stop_loss_sync_failed_closed")
+        self.assertFalse(merged["success"])
+        self.assertEqual(merged["action"], "post_trade_stop_loss_sync_failed_closed")
+        mocked_close.assert_called_once()
+        self.assertEqual(mocked_close.call_args.kwargs["context"], "post_trade_stop_loss_sync_failed")
+
     def test_non_ai_cycle_does_not_create_db_artifact(self):
         slot = _passive_slot()
         slot_state = {"slot_id": "passive_cl", "kind": "passive", "symbol": "CLUSDT"}

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, Optional
 
 BINANCE_FUTURES_BASE_URL = "https://fapi.binance.com"
+BINANCE_FUTURES_TESTNET_BASE_URL = "https://demo-fapi.binance.com"
 DEFAULT_RECV_WINDOW_MS = 5000
 
 
@@ -24,8 +26,32 @@ def safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _load_config_value(key: str) -> Optional[str]:
+    try:
+        from src.infra.env_loader import load_env_var
+
+        value = load_env_var(key)
+    except Exception:
+        value = os.getenv(key)
+    if value is None:
+        return None
+    normalized = str(value).strip().strip('"').strip("'")
+    return normalized or None
+
+
+def _is_truthy(value: Optional[str]) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def get_binance_futures_base_url() -> str:
-    """Return the production USDT-M Futures base URL."""
+    """Return the configured USDT-M Futures base URL."""
+    configured_url = _load_config_value("BINANCE_FUTURES_BASE_URL")
+    if configured_url:
+        return configured_url.rstrip("/")
+
+    if _is_truthy(_load_config_value("BINANCE_FUTURES_TESTNET")):
+        return BINANCE_FUTURES_TESTNET_BASE_URL
+
     return BINANCE_FUTURES_BASE_URL
 
 

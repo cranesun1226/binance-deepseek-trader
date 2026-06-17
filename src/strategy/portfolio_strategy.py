@@ -1467,7 +1467,39 @@ def _sync_position_after_trade(
         position=synced_position,
         stop_loss_pct=stop_loss_pct,
     )
-    refreshed_position = get_position_snapshot(api_key, api_secret, symbol, retries=2, sleep_seconds=0.35) or synced_position
+    if not (isinstance(stop_sync, dict) and bool(stop_sync.get("success"))):
+        close_result = _close_existing_position(
+            api_key=api_key,
+            api_secret=api_secret,
+            position=synced_position,
+            context="post_trade_stop_loss_sync_failed",
+        )
+        close_ok = bool(close_result.get("success"))
+        return {
+            "position": synced_metrics,
+            "stop_sync": stop_sync,
+            "direction_verification": {
+                "success": True,
+                "expected_direction": expected_direction,
+                "actual_direction": actual_direction or None,
+            }
+            if expected_direction
+            else None,
+            "protection_verification": {
+                "success": False,
+                "action": (
+                    "post_trade_stop_loss_sync_failed_closed"
+                    if close_ok
+                    else "post_trade_stop_loss_sync_failed_close_failed"
+                ),
+                "close": close_result,
+            },
+        }
+
+    refreshed_position = (
+        get_position_snapshot(api_key, api_secret, symbol, retries=2, sleep_seconds=0.35)
+        or synced_position
+    )
     refreshed_metrics = calculate_position_metrics(refreshed_position)
     return {
         "position": refreshed_metrics,
@@ -1488,6 +1520,12 @@ def _merge_post_trade_sync_result(execution: Dict[str, Any], sync_result: Dict[s
     if isinstance(verification, dict) and not bool(verification.get("success")):
         execution["success"] = False
         execution["action"] = str(verification.get("action") or "post_trade_direction_verification_failed")
+        return execution
+
+    protection = sync_result.get("protection_verification")
+    if isinstance(protection, dict) and not bool(protection.get("success")):
+        execution["success"] = False
+        execution["action"] = str(protection.get("action") or "post_trade_protection_verification_failed")
     return execution
 
 

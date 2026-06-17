@@ -1,3 +1,5 @@
+import os
+import tempfile
 import unittest
 from datetime import datetime, timezone
 from unittest.mock import patch
@@ -28,6 +30,20 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(scheduler.state["slots"]["active_1"]["symbol"], "ESUSDT")
         mocked_run.assert_called_once()
         mocked_save.assert_called_once()
+
+    def test_save_state_raises_and_removes_temp_file_on_atomic_replace_failure(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            scheduler = TradingScheduler()
+            scheduler.state_file_path = os.path.join(temp_dir, "scheduler_state.json")
+            scheduler.state = {"version": STATE_VERSION, "slots": {"active_1": {"symbol": "BTCUSDT"}}}
+
+            with patch("src.strategy.scheduler.os.replace", side_effect=OSError("disk full")):
+                with self.assertRaises(RuntimeError):
+                    scheduler.save_state()
+
+            self.assertFalse(os.path.exists(scheduler.state_file_path))
+            leftovers = [name for name in os.listdir(temp_dir) if name.startswith("scheduler_state.json.tmp.")]
+            self.assertEqual(leftovers, [])
 
     def test_ai_decision_message_uses_structured_decision_reason(self):
         scheduler = TradingScheduler()
