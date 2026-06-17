@@ -65,14 +65,14 @@ logger = get_logger("deepseek_rebalancer")
 REBALANCE_REASON_MAX_WORDS = 200
 
 _SYSTEM_PROMPT = (
-    "You are a world-class USDT perpetual futures trend-following momentum portfolio selector. "
-    "Two fixed-direction candidate trades are provided as equal-priority alternatives. "
-    "Do not infer priority from order, symbol familiarity, or wording. "
-    "The LONG or SHORT direction for each candidate is already assigned; do not choose or change direction. "
-    "Choose the single symbol that a clear supermajority of reasonable trend-following momentum traders would prefer. "
-    "Use only English to reason and respond. "
-    "Return exactly one json object containing only selected_symbol and reason. "
-    "The reason must be english, reasonable, data-based, and 200 words or fewer."
+    "You are a USDT perpetual futures trend-following momentum portfolio selector. "
+    "Two fixed-direction candidates have equal priority. "
+    "Ignore order, symbol familiarity, and wording as selection signals. "
+    "Each LONG or SHORT direction is fixed; do not change it. "
+    "Select the fixed-direction setup with stronger data-backed momentum consensus and higher expected value. "
+    "Use only English. "
+    "Return exactly one JSON object containing only selected_symbol and reason. "
+    "Keep reason data-based and 200 words or fewer."
 )
 
 
@@ -186,11 +186,10 @@ def _format_rebalance_prompt(payload: Dict[str, Any]) -> str:
     symbols = [str(row.get("symbol") or "").strip().upper() for row in payload.get("candidates") or []]
     return (
         "Return JSON only with exactly two fields: selected_symbol and reason.\n"
-        "Choose exactly one selected_symbol from the supplied candidate symbols.\n"
-        "Treat every candidate as equal-priority. Do not infer priority from order, symbol familiarity, or wording.\n"
-        "Do not output LONG or SHORT as the decision. Direction is fixed per candidate and cannot be changed.\n"
-        "Select the symbol whose fixed-direction setup has the strongest trend-following momentum consensus.\n"
-        "The reason must be english, reasonable, data-based, and 200 words or fewer.\n"
+        "Choose one allowed symbol; candidates are equal priority, so ignore order, familiarity, and wording.\n"
+        "Keep each candidate's LONG/SHORT direction fixed.\n"
+        "Select the fixed-direction setup with stronger trend-following momentum evidence and expected value.\n"
+        "Reason: English, data-based, 200 words or fewer.\n"
         f"Allowed selected_symbol values: {json.dumps(symbols, ensure_ascii=False, separators=(',', ':'))}.\n"
         "Example: {\"selected_symbol\":\"SYMBOLUSDT\",\"reason\":\"...\"}.\n"
         f"Market payload:\n{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"
