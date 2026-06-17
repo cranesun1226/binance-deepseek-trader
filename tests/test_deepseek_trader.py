@@ -59,7 +59,7 @@ class DeepSeekTraderTests(unittest.TestCase):
             "Analyze with a trend-following market consensus view, favoring the LONG or SHORT direction that a clear supermajority of reasonable momentum traders would broadly agree has the higher expected value. "
             "Use only English to reason and respond. "
             "Return exactly one json object containing only the decision and reason. "
-            "The reason must be english, reasonable, data-based, and 200 words or fewer.",
+            "The reason must be english, reasonable, data-based, and 500 words or fewer.",
         )
         self.assertEqual(payload["messages"][1]["content"], "prompt")
         self.assertEqual(payload["thinking"], {"type": "enabled"})
@@ -273,7 +273,7 @@ class DeepSeekTraderTests(unittest.TestCase):
             'You are a world-class BTCUSDT trader.\n'
             'Return JSON only with exactly two fields: decision and reason.\n'
             'Analyze with a trend-following market consensus view, favoring the LONG or SHORT direction that a clear supermajority of reasonable trend-following traders would broadly agree has the higher expected value.\n'
-            'The reason must be english, reasonable, data-based, and 200 words or fewer.\n'
+            'The reason must be english, reasonable, data-based, and 500 words or fewer.\n'
             'Examples: {"decision":"LONG","reason":"..."} or {"decision":"SHORT","reason":"..."}.\n'
             'Market payload:\n{"symbol":"BTCUSDT","reference_price":100.0,"timeframes":{"1h":[98.0,99.0,100.0]}}',
         )

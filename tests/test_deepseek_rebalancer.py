@@ -37,6 +37,8 @@ class DeepSeekRebalancerTests(unittest.TestCase):
 
         prompt = deepseek_rebalancer._format_rebalance_prompt(payload)
         lowered_prompt = prompt.lower()
+        self.assertEqual(deepseek_rebalancer.REBALANCE_REASON_MAX_WORDS, 500)
+        self.assertIn("500 words or fewer", prompt)
         self.assertNotIn("current", lowered_prompt)
         self.assertNotIn("existing", lowered_prompt)
         self.assertNotIn("replacement", lowered_prompt)

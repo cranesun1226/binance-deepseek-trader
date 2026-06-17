@@ -54,7 +54,7 @@ DEEPSEEK_MAX_REASONING_EFFORT = "max"
 DEEPSEEK_DEFAULT_REASONING_EFFORT = DEEPSEEK_MAX_REASONING_EFFORT
 DEEPSEEK_DEFAULT_TIMEOUT_SECONDS = 300.0
 DEEPSEEK_CONNECT_TIMEOUT_SECONDS = 10.0
-DECISION_REASON_MAX_WORDS = 200
+DECISION_REASON_MAX_WORDS = 500
 _ONE_MILLION = 1_000_000
 _CJK_PATTERN = re.compile(r"[\u4e00-\u9fff]")
 
@@ -76,7 +76,7 @@ _SYSTEM_PROMPT = (
     "Analyze with a trend-following market consensus view, favoring the LONG or SHORT direction that a clear supermajority of reasonable momentum traders would broadly agree has the higher expected value. "
     "Use only English to reason and respond. "
     "Return exactly one json object containing only the decision and reason. "
-    "The reason must be english, reasonable, data-based, and 200 words or fewer."
+    f"The reason must be english, reasonable, data-based, and {DECISION_REASON_MAX_WORDS} words or fewer."
 )
 
 DecisionT = TypeVar("DecisionT", bound=BaseModel)
@@ -90,7 +90,7 @@ class TradeDirectionDecision(BaseModel):
     )
     reason: str = Field(
         description=(
-            "English rationale in 200 words or fewer to decide the LONG or SHORT position."
+            f"English rationale in {DECISION_REASON_MAX_WORDS} words or fewer to decide the LONG or SHORT position."
         )
     )
 
@@ -189,7 +189,7 @@ def _format_direction_prompt(payload: Dict[str, Any]) -> str:
         f"You are a world-class {symbol} trader.\n"
         "Return JSON only with exactly two fields: decision and reason.\n"
         "Analyze with a trend-following market consensus view, favoring the LONG or SHORT direction that a clear supermajority of reasonable trend-following traders would broadly agree has the higher expected value.\n"
-        "The reason must be english, reasonable, data-based, and 200 words or fewer.\n"
+        f"The reason must be english, reasonable, data-based, and {DECISION_REASON_MAX_WORDS} words or fewer.\n"
         "Examples: {\"decision\":\"LONG\",\"reason\":\"...\"} or {\"decision\":\"SHORT\",\"reason\":\"...\"}.\n"
         f"Market payload:\n{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"
     )
