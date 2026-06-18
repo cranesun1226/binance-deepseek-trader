@@ -39,6 +39,8 @@ class DeepSeekRebalancerTests(unittest.TestCase):
         lowered_prompt = prompt.lower()
         self.assertEqual(deepseek_rebalancer.REBALANCE_REASON_MAX_WORDS, 500)
         self.assertIn("500 words or fewer", prompt)
+        self.assertIn("compare both candidates directly", lowered_prompt)
+        self.assertIn("selected setup is more rational", lowered_prompt)
         self.assertNotIn("current", lowered_prompt)
         self.assertNotIn("existing", lowered_prompt)
         self.assertNotIn("replacement", lowered_prompt)

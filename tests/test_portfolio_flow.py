@@ -952,7 +952,7 @@ class PortfolioFlowTests(unittest.TestCase):
         mocked_place.assert_not_called()
         self.assertEqual([event_name for event_name, _ in notifications], ["active_screening_after"])
 
-    def test_active_due_rank_review_feeds_trader_directions_into_rebalancer(self):
+    def test_active_due_rank_review_feeds_fixed_directions_into_rebalancer_without_trader(self):
         slot = _active_slot()
         slot_state = {
             "slot_id": "active_1",
@@ -970,12 +970,19 @@ class PortfolioFlowTests(unittest.TestCase):
             "src.strategy.portfolio_strategy._reference_price",
             side_effect=[101.0, 205.0],
         ), patch(
+            "src.strategy.portfolio_strategy._fetch_prompt_market_context",
+            return_value={
+                "timeframes": {"1h": current_closes},
+                "ai_prompt_timeframe": "1h",
+                "ai_prompt_candle_count": 168,
+            },
+        ), patch(
             "src.strategy.portfolio_strategy._screen_active_candidate",
             return_value={
                 "symbol": "NQUSDT",
                 "screening_decision": "SHORT",
                 "screening_direction": "down",
-                "close_prices": _close_prices(start=220.0, step=-0.1),
+                "close_prices": candidate_closes,
                 "decision_source": "active_screener",
                 "selection": {
                     "symbol": "NQUSDT",
@@ -991,26 +998,7 @@ class PortfolioFlowTests(unittest.TestCase):
             },
         ), patch(
             "src.strategy.portfolio_strategy._evaluate_slot_direction",
-            side_effect=[
-                (
-                    "SHORT",
-                    {"decision": {"decision": "SHORT", "reason": "Current symbol lost upside quality."}},
-                    {
-                        "ai_prompt_timeframe": "1h",
-                        "ai_prompt_candle_count": 168,
-                        "ai_prompt_close_prices": current_closes,
-                    },
-                ),
-                (
-                    "LONG",
-                    {"decision": {"decision": "LONG", "reason": "Candidate has better forward setup."}},
-                    {
-                        "ai_prompt_timeframe": "1h",
-                        "ai_prompt_candle_count": 168,
-                        "ai_prompt_close_prices": candidate_closes,
-                    },
-                ),
-            ],
+            side_effect=AssertionError("active rebalance should not call deepseek_trader direction review"),
         ) as mocked_ai, patch(
             "src.strategy.portfolio_strategy._evaluate_active_rebalance_or_none",
             return_value=(
@@ -1050,23 +1038,25 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertTrue(result["screening_triggered"])
         self.assertEqual(result["trigger_reason"], "active_rank_review_due")
         self.assertEqual(result["action"], "switched_active_position_by_rebalancer")
-        self.assertEqual(result["ai_decision"], "LONG")
+        self.assertEqual(result["ai_decision"], "SHORT")
         self.assertEqual(result["selected_symbol"], "NQUSDT")
         self.assertEqual(active_symbol, "NQUSDT")
         self.assertEqual(updated_state["symbol"], "NQUSDT")
-        self.assertEqual(updated_state["last_ai_decision"], "LONG")
-        self.assertEqual(result["active_direction_reviews"]["current"]["decision"], "SHORT")
-        self.assertEqual(result["active_direction_reviews"]["candidate"]["decision"], "LONG")
-        self.assertEqual(mocked_ai.call_count, 2)
+        self.assertEqual(updated_state["last_ai_decision"], "SHORT")
+        self.assertEqual(result["decision_source"], "deepseek_rebalancer")
+        self.assertEqual(result["active_rebalance_direction_basis"]["current"]["decision"], "LONG")
+        self.assertEqual(result["active_rebalance_direction_basis"]["candidate"]["decision"], "SHORT")
+        self.assertNotIn("active_direction_reviews", result)
+        mocked_ai.assert_not_called()
         mocked_rebalancer.assert_called_once()
         rebalancer_kwargs = mocked_rebalancer.call_args.kwargs
-        self.assertEqual(rebalancer_kwargs["current_payload"]["decision"], "SHORT")
-        self.assertEqual(rebalancer_kwargs["candidate_payload"]["decision"], "LONG")
+        self.assertEqual(rebalancer_kwargs["current_payload"]["decision"], "LONG")
+        self.assertEqual(rebalancer_kwargs["candidate_payload"]["decision"], "SHORT")
         self.assertEqual(rebalancer_kwargs["current_payload"]["timeframes"]["1h"], current_closes[:-1] + [101.0])
         self.assertEqual(rebalancer_kwargs["candidate_payload"]["timeframes"]["1h"], candidate_closes[:-1] + [205.0])
         mocked_close.assert_called_once()
         mocked_place.assert_called_once()
-        self.assertEqual(mocked_place.call_args.kwargs["decision"], "LONG")
+        self.assertEqual(mocked_place.call_args.kwargs["decision"], "SHORT")
 
 
 if __name__ == "__main__":

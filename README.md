@@ -39,7 +39,7 @@ Before ranking, the screener applies the directional entry filter against the li
 - `LONG`: `min(low over latest 24 1h klines) >= live_price * 0.96`
 - `SHORT`: `max(high over latest 24 1h klines) <= live_price * 1.04`
 
-The trend direction is screening metadata. After a candidate is selected, the DeepSeek trader flow still evaluates the final `LONG` or `SHORT` execution direction for entries and active reviews.
+The trend direction is screening metadata. After a fresh candidate is selected for an empty active slot, the DeepSeek trader flow evaluates the final `LONG` or `SHORT` execution direction for entry. In active rebalancing, the rebalancer uses the current position direction and the screened candidate direction directly.
 
 ## Active Review
 
@@ -50,7 +50,7 @@ When a slot has an open position, it is held until one of these happens:
 - price moves by the configured trigger percentage from the last DeepSeek trader anchor
 - the 24h active review is due
 
-On a price-triggered review, DeepSeek trader rechecks the current symbol direction and the existing position is kept, resized, or reversed as needed. During the 24h review, the screener re-ranks the slot's own universe while allowing the current symbol. If the current symbol remains top-ranked, DeepSeek trader reviews direction again. If a different candidate is top-ranked, DeepSeek trader first evaluates both the current symbol and the candidate, then DeepSeek rebalancer chooses between those two trader-backed directions. The current position is closed only when the new candidate is selected.
+On a price-triggered review, DeepSeek trader rechecks the current symbol direction and the existing position is kept, resized, or reversed as needed. During the 24h review, the screener re-ranks the slot's own universe while allowing the current symbol. If the current symbol remains top-ranked, DeepSeek trader reviews direction again. If a different candidate is top-ranked, DeepSeek rebalancer directly compares the current position direction against the screened candidate direction and chooses one symbol. The current position is closed only when the new candidate is selected.
 
 ## Configuration
 

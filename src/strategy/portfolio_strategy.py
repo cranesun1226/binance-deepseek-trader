@@ -1808,30 +1808,6 @@ def _active_rebalance_screened_payload(
     )
 
 
-def _active_rebalance_payload_from_prompt(
-    *,
-    symbol: str,
-    decision: str,
-    reference_price: float,
-    prompt_payload: Dict[str, Any],
-    config: Dict[str, Any],
-    metrics: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    timeframe = str(prompt_payload.get("ai_prompt_timeframe") or config["ai_prompt_timeframe"])
-    close_prices = prompt_payload.get("ai_prompt_close_prices")
-    if not isinstance(close_prices, (list, tuple)) or isinstance(close_prices, (str, bytes)):
-        close_prices = []
-    return _active_rebalance_candidate_payload(
-        symbol=symbol,
-        decision=decision,
-        reference_price=reference_price,
-        close_prices=close_prices,
-        timeframe=timeframe,
-        expected_count=int(config["ai_prompt_candle_count"]),
-        metrics=metrics,
-    )
-
-
 def _selected_rebalance_close_prices(payload: Optional[Dict[str, Any]], timeframe: str) -> list[float]:
     if not isinstance(payload, dict):
         return []
@@ -1847,6 +1823,15 @@ def _selected_rebalance_close_prices(payload: Optional[Dict[str, Any]], timefram
         if parsed is not None:
             close_prices.append(parsed)
     return close_prices
+
+
+def _active_rebalance_prompt_payload(payload: Optional[Dict[str, Any]], config: Dict[str, Any]) -> Dict[str, Any]:
+    timeframe = str(config["ai_prompt_timeframe"])
+    return {
+        "ai_prompt_timeframe": timeframe,
+        "ai_prompt_candle_count": int(config["ai_prompt_candle_count"]),
+        "ai_prompt_close_prices": _selected_rebalance_close_prices(payload, timeframe),
+    }
 
 
 def _evaluate_active_rebalance_or_none(
@@ -2502,75 +2487,31 @@ def _run_active_slot(
 
         if not active_mode_changed and candidate_symbol != current_symbol:
             try:
-                current_decision, current_ai_analysis, current_prompt_payload, current_ai_error = (
-                    _evaluate_active_direction_or_none(
-                        slot=slot,
-                        symbol=current_symbol,
-                        reference_price=reference_price,
-                        config=config,
-                        as_of_ms=as_of_ms,
-                        cycle_dir_factory=cycle_dir_factory,
-                        notification_callback=notification_callback,
-                        position=position,
-                        trigger_info=trigger_info,
-                    )
+                current_rebalance_payload = _active_rebalance_current_payload(
+                    current_symbol=current_symbol,
+                    position=position,
+                    slot_state=tracked_state,
+                    reference_price=reference_price,
+                    config=config,
+                    as_of_ms=as_of_ms,
                 )
-                candidate_decision, candidate_ai_analysis, candidate_prompt_payload, candidate_ai_error = (
-                    _evaluate_active_direction_or_none(
-                        slot=slot,
-                        symbol=candidate_symbol,
-                        reference_price=candidate_reference_price,
-                        config=config,
-                        as_of_ms=as_of_ms,
-                        cycle_dir_factory=cycle_dir_factory,
-                        notification_callback=notification_callback,
-                        position=None,
-                        trigger_info=trigger_info,
-                    )
+                candidate_rebalance_payload = _active_rebalance_screened_payload(
+                    candidate=candidate,
+                    reference_price=candidate_reference_price,
+                    config=config,
                 )
                 result["ai_triggered"] = True
-                result["active_direction_reviews"] = {
+                result["decision_source"] = "deepseek_rebalancer"
+                result["active_rebalance_direction_basis"] = {
                     "current": {
                         "symbol": current_symbol,
-                        "decision": current_decision,
-                        "analysis": current_ai_analysis,
-                        "error": current_ai_error,
+                        "decision": current_rebalance_payload.get("decision"),
                     },
                     "candidate": {
                         "symbol": candidate_symbol,
-                        "decision": candidate_decision,
-                        "analysis": candidate_ai_analysis,
-                        "error": candidate_ai_error,
+                        "decision": candidate_rebalance_payload.get("decision"),
                     },
                 }
-                if current_decision is None or candidate_decision is None:
-                    failed_parts = []
-                    if current_decision is None:
-                        failed_parts.append(f"current_direction_failed: {current_ai_error or 'no_decision'}")
-                    if candidate_decision is None:
-                        failed_parts.append(f"candidate_direction_failed: {candidate_ai_error or 'no_decision'}")
-                    raise ValueError("; ".join(failed_parts))
-
-                current_rebalance_payload = _active_rebalance_payload_from_prompt(
-                    symbol=current_symbol,
-                    decision=current_decision,
-                    reference_price=reference_price,
-                    prompt_payload=current_prompt_payload,
-                    config=config,
-                )
-                selected = (
-                    (candidate.get("selection") or {}).get("selected")
-                    if isinstance(candidate.get("selection"), dict)
-                    else {}
-                )
-                candidate_rebalance_payload = _active_rebalance_payload_from_prompt(
-                    symbol=candidate_symbol,
-                    decision=candidate_decision,
-                    reference_price=candidate_reference_price,
-                    prompt_payload=candidate_prompt_payload,
-                    config=config,
-                    metrics=selected if isinstance(selected, dict) else None,
-                )
             except Exception as exc:
                 stop_sync = _sync_fixed_stop_loss(
                     api_key=api_key,
@@ -2655,9 +2596,9 @@ def _run_active_slot(
                 candidate_symbol = current_symbol
                 candidate_reference_price = reference_price
                 selected_direction_decision = str((current_rebalance_payload or {}).get("decision") or "")
-                selected_ai_analysis = current_ai_analysis
-                selected_prompt_payload = current_prompt_payload
-                selected_ai_error = current_ai_error
+                selected_ai_analysis = rebalance_analysis
+                selected_prompt_payload = _active_rebalance_prompt_payload(current_rebalance_payload, config)
+                selected_ai_error = None
                 result["symbol"] = current_symbol
                 result["current_price"] = reference_price
                 result["close_prices"] = _selected_rebalance_close_prices(
@@ -2702,9 +2643,9 @@ def _run_active_slot(
                 return result, updated_state, current_symbol
             else:
                 selected_direction_decision = str((candidate_rebalance_payload or {}).get("decision") or "")
-                selected_ai_analysis = candidate_ai_analysis
-                selected_prompt_payload = candidate_prompt_payload
-                selected_ai_error = candidate_ai_error
+                selected_ai_analysis = rebalance_analysis
+                selected_prompt_payload = _active_rebalance_prompt_payload(candidate_rebalance_payload, config)
+                selected_ai_error = None
                 result["close_prices"] = _selected_rebalance_close_prices(
                     candidate_rebalance_payload,
                     str(config["ai_prompt_timeframe"]),
