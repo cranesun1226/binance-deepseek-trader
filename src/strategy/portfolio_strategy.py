@@ -37,6 +37,7 @@ from src.infra.logger import format_log_details, get_logger
 from src.strategy.active_screener import (
     NoActiveCandidateError,
     calculate_trend_metrics,
+    screen_active_all_symbol,
     screen_active_symbol,
     screen_active_tradfi_symbol,
 )
@@ -67,12 +68,19 @@ SYMBOL_BAN_REASON_REGION_RESTRICTED = "binance_region_restricted"
 SYMBOL_BAN_SCOPE_ACTIVE_SCREENER = "active_screener"
 TRIGGER_PRICE_DIGITS = 8
 MANAGED_DECISIONS = {"LONG", "SHORT"}
-ACTIVE_SCREENING_MODES = {"crypto", "tradfi"}
+ACTIVE_SCREENING_MODES = {"all", "crypto", "tradfi"}
+ACTIVE_SCREENING_MODE_ALIASES = {
+    "all-usdt": "all",
+    "all_usdt": "all",
+    "total": "all",
+    "usdt": "all",
+    "전체": "all",
+}
 ACTIVE_SLOT_SPECS = (
     ("active_1", "active1", "tradfi"),
     ("active_2", "active2", "tradfi"),
     ("active_3", "active3", "tradfi"),
-    ("active_4", "active4", "crypto"),
+    ("active_4", "active4", "all"),
 )
 PORTFOLIO_SLOT_TARGET_MARGIN_RATIO = 0.25
 MATERIAL_POSITION_RECORD_ACTIONS = {
@@ -454,6 +462,7 @@ def _normalize_ai_decision(value: Any) -> Optional[str]:
 
 def _normalize_active_screening_mode_value(value: Any) -> Optional[str]:
     normalized = str(value or "").strip().lower()
+    normalized = ACTIVE_SCREENING_MODE_ALIASES.get(normalized, normalized)
     return normalized if normalized in ACTIVE_SCREENING_MODES else None
 
 
@@ -819,6 +828,23 @@ def _active_recent_symbols_by_mode(
             _active_slot_memory_symbols(slot_state)
         )
     return grouped
+
+
+def _screening_modes_overlap(left: str, right: str) -> bool:
+    if left == right:
+        return True
+    return "all" in {left, right}
+
+
+def _recent_symbols_for_screening_mode(
+    grouped: Dict[str, set[str]],
+    screening_mode: str,
+) -> set[str]:
+    symbols: set[str] = set()
+    for grouped_mode, grouped_symbols in grouped.items():
+        if _screening_modes_overlap(screening_mode, grouped_mode):
+            symbols.update(grouped_symbols)
+    return symbols
 
 
 def _normalize_portfolio_state(previous_state: Optional[Dict[str, Any]], slots: Sequence[PortfolioSlot]) -> Dict[str, Any]:
@@ -1568,7 +1594,12 @@ def _screen_active_candidate(
     excluded_symbols: Sequence[str],
 ) -> Dict[str, Any]:
     screening_mode = _active_screening_mode(slot)
-    screener = screen_active_tradfi_symbol if screening_mode == "tradfi" else screen_active_symbol
+    if screening_mode == "tradfi":
+        screener = screen_active_tradfi_symbol
+    elif screening_mode == "all":
+        screener = screen_active_all_symbol
+    else:
+        screener = screen_active_symbol
     screener_output = screener(
         excluded_symbols=excluded_symbols,
         quote=str(config["screener_quote"]),
@@ -3151,9 +3182,9 @@ def run_portfolio_cycle(
                     as_of_ms=resolved_as_of_ms,
                     cycle_dir_factory=ensure_cycle_dir,
                     notification_callback=notification_callback,
-                    recent_universe_symbols=recent_active_symbols_by_mode.get(
+                    recent_universe_symbols=_recent_symbols_for_screening_mode(
+                        recent_active_symbols_by_mode,
                         _active_screening_mode(slot),
-                        set(),
                     ),
                     runtime_banned_symbols=_runtime_banned_symbols(portfolio_state),
                 )

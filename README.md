@@ -6,8 +6,8 @@ Binance USDT-M futures portfolio runner powered by a trend-quality active screen
 
 - Four active slots, each targeting 25% margin allocation.
 - Active 1, 2, and 3 screen TradFi USDT-M perpetual symbols.
-- Active 4 screens non-TradFi crypto USDT-M perpetual symbols.
-- This creates a 3:1 TradFi-to-crypto active market split.
+- Active 4 screens the full USDT-M perpetual universe, including TradFi and non-TradFi crypto symbols.
+- This keeps three dedicated TradFi slots while allowing the fourth slot to select the strongest overall USDT setup.
 - All active slots use 2x leverage by default and a fixed 4% stop loss from entry.
 - Open active positions use the 1% price trigger for DeepSeek trader direction checks and the configured active re-screen interval, default 24 hours, for universe ranking and symbol review.
 

@@ -6,6 +6,7 @@ from src.strategy.active_screener import (
     ENTRY_EXTREME_LOOKBACK,
     TREND_SCORE_WEIGHTS,
     _build_trend_candidate,
+    build_usdt_crypto_perpetual_universe,
     build_usdt_perpetual_universe,
     build_usdt_tradfi_perpetual_universe,
     calculate_trend_metrics,
@@ -171,7 +172,7 @@ class ActiveScreenerTests(unittest.TestCase):
         self.assertEqual(extremes["recent_kline_min_low"], 71.0)
         self.assertEqual(extremes["recent_kline_max_high"], 129.0)
 
-    def test_universe_keeps_trading_crypto_usdt_perpetuals_only(self):
+    def test_universe_builders_split_all_crypto_and_tradfi_usdt_perpetuals(self):
         exchange_info = {
             "symbols": [
                 {"symbol": "BTCUSDT", "contractType": "PERPETUAL", "status": "TRADING", "quoteAsset": "USDT"},
@@ -182,13 +183,21 @@ class ActiveScreenerTests(unittest.TestCase):
                     "quoteAsset": "USDT",
                     "underlyingSubType": ["TradFi"],
                 },
+                {
+                    "symbol": "QQQUSDT",
+                    "contractType": "TRADIFI_PERPETUAL",
+                    "status": "TRADING",
+                    "quoteAsset": "USDT",
+                    "underlyingSubType": ["TradFi"],
+                },
                 {"symbol": "ETHUSDT", "contractType": "CURRENT_QUARTER", "status": "TRADING", "quoteAsset": "USDT"},
                 {"symbol": "XRPBUSD", "contractType": "PERPETUAL", "status": "TRADING", "quoteAsset": "BUSD"},
                 {"symbol": "OLDUSDT", "contractType": "PERPETUAL", "status": "BREAK", "quoteAsset": "USDT"},
             ]
         }
 
-        self.assertEqual(build_usdt_perpetual_universe(exchange_info), {"BTCUSDT"})
+        self.assertEqual(build_usdt_perpetual_universe(exchange_info), {"BTCUSDT", "QQQUSDT", "XAUUSDT"})
+        self.assertEqual(build_usdt_crypto_perpetual_universe(exchange_info), {"BTCUSDT"})
 
     def test_tradfi_universe_uses_tradfi_contract_metadata(self):
         exchange_info = {

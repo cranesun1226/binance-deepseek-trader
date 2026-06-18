@@ -21,8 +21,8 @@ deepseek_timeout_seconds: 300.0
 
 # Portfolio allocation
 # Four active slots each target 1/4 margin allocation. Active 1/2/3 screen
-# TradFi USDT-M perpetuals; active 4 screens non-TradFi crypto USDT-M
-# perpetuals, giving the portfolio a 3:1 TradFi-to-crypto market split.
+# TradFi USDT-M perpetuals; active 4 screens the full USDT-M perpetual
+# universe, including TradFi and non-TradFi crypto symbols.
 active_leverage: 2
 capital_usage_ratio: 0.99
 rebalance_threshold_pct: 0.02

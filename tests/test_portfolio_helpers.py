@@ -11,7 +11,7 @@ class PortfolioHelperTests(unittest.TestCase):
         self.assertEqual([slot.slot_id for slot in slots], ["active_1", "active_2", "active_3", "active_4"])
         self.assertEqual([slot.kind for slot in slots], ["active"] * 4)
         self.assertEqual([slot.target_margin_ratio for slot in slots], [0.25] * 4)
-        self.assertEqual([slot.active_screening_mode for slot in slots], ["tradfi", "tradfi", "tradfi", "crypto"])
+        self.assertEqual([slot.active_screening_mode for slot in slots], ["tradfi", "tradfi", "tradfi", "all"])
 
     def test_deepseek_reasoning_effort_normalization_matches_api_values(self):
         self.assertEqual(portfolio_strategy._normalize_reasoning_effort("xhigh"), "max")
@@ -308,7 +308,15 @@ class PortfolioHelperTests(unittest.TestCase):
         grouped = portfolio_strategy._active_recent_symbols_by_mode(slots, state)
 
         self.assertEqual(grouped["tradfi"], {"ESUSDT", "NQUSDT", "GCUSDT", "YMUSDT", "XAUUSDT"})
-        self.assertEqual(grouped["crypto"], {"BTCUSDT", "ETHUSDT"})
+        self.assertEqual(grouped["all"], {"BTCUSDT", "ETHUSDT"})
+        self.assertEqual(
+            portfolio_strategy._recent_symbols_for_screening_mode(grouped, "all"),
+            {"ESUSDT", "NQUSDT", "GCUSDT", "YMUSDT", "XAUUSDT", "BTCUSDT", "ETHUSDT"},
+        )
+        self.assertEqual(
+            portfolio_strategy._recent_symbols_for_screening_mode(grouped, "tradfi"),
+            {"ESUSDT", "NQUSDT", "GCUSDT", "YMUSDT", "XAUUSDT", "BTCUSDT", "ETHUSDT"},
+        )
 
     def test_runtime_symbol_bans_are_normalized_and_excluded_from_active_screening(self):
         slots = portfolio_strategy._build_portfolio_slots({})
@@ -371,7 +379,7 @@ class PortfolioHelperTests(unittest.TestCase):
                 "slots": {
                     "active_4": {
                         "symbol": "BTCUSDT",
-                        "active_screening_mode": "tradfi",
+                        "active_screening_mode": "crypto",
                         "last_ai_decision": "LONG",
                     },
                 },
@@ -380,9 +388,9 @@ class PortfolioHelperTests(unittest.TestCase):
         )
 
         active4_state = state["slots"]["active_4"]
-        self.assertEqual(active4_state["active_screening_mode"], "crypto")
+        self.assertEqual(active4_state["active_screening_mode"], "all")
         self.assertTrue(active4_state["active_screening_mode_changed"])
-        self.assertEqual(active4_state["previous_active_screening_mode"], "tradfi")
+        self.assertEqual(active4_state["previous_active_screening_mode"], "crypto")
 
 
 if __name__ == "__main__":

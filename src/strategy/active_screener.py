@@ -160,20 +160,41 @@ def is_tradfi_symbol_info(row: Dict[str, Any]) -> bool:
     return str(subtypes or "").strip().lower() == "tradfi"
 
 
+def _normalized_trading_quote_symbol(row: Any, normalized_quote: str) -> Optional[str]:
+    if not isinstance(row, dict):
+        return None
+    symbol = str(row.get("symbol") or "").strip().upper()
+    if not symbol:
+        return None
+    if str(row.get("status") or "").upper() != "TRADING":
+        return None
+    if str(row.get("quoteAsset") or "").upper() != normalized_quote:
+        return None
+    return symbol
+
+
 def build_usdt_perpetual_universe(exchange_info: Dict[str, Any], quote: str = "USDT") -> set[str]:
     normalized_quote = str(quote or "USDT").strip().upper()
     universe: set[str] = set()
     for row in exchange_info.get("symbols", []) or []:
-        if not isinstance(row, dict):
+        symbol = _normalized_trading_quote_symbol(row, normalized_quote)
+        if not symbol:
             continue
-        symbol = str(row.get("symbol") or "").strip().upper()
+        contract_type = str(row.get("contractType") or "").strip().upper()
+        if contract_type != "PERPETUAL" and not is_tradfi_symbol_info(row):
+            continue
+        universe.add(symbol)
+    return universe
+
+
+def build_usdt_crypto_perpetual_universe(exchange_info: Dict[str, Any], quote: str = "USDT") -> set[str]:
+    normalized_quote = str(quote or "USDT").strip().upper()
+    universe: set[str] = set()
+    for row in exchange_info.get("symbols", []) or []:
+        symbol = _normalized_trading_quote_symbol(row, normalized_quote)
         if not symbol:
             continue
         if str(row.get("contractType") or "").upper() != "PERPETUAL":
-            continue
-        if str(row.get("status") or "").upper() != "TRADING":
-            continue
-        if str(row.get("quoteAsset") or "").upper() != normalized_quote:
             continue
         if is_tradfi_symbol_info(row):
             continue
@@ -185,14 +206,8 @@ def build_usdt_tradfi_perpetual_universe(exchange_info: Dict[str, Any], quote: s
     normalized_quote = str(quote or "USDT").strip().upper()
     universe: set[str] = set()
     for row in exchange_info.get("symbols", []) or []:
-        if not isinstance(row, dict):
-            continue
-        symbol = str(row.get("symbol") or "").strip().upper()
+        symbol = _normalized_trading_quote_symbol(row, normalized_quote)
         if not symbol:
-            continue
-        if str(row.get("status") or "").upper() != "TRADING":
-            continue
-        if str(row.get("quoteAsset") or "").upper() != normalized_quote:
             continue
         if not is_tradfi_symbol_info(row):
             continue
@@ -668,7 +683,7 @@ def screen_active_symbol(
         ),
     )
     exchange_info = client.exchange_info()
-    universe = build_usdt_perpetual_universe(exchange_info, quote=quote)
+    universe = build_usdt_crypto_perpetual_universe(exchange_info, quote=quote)
     selection = _screen_active_universe(
         screening_mode="crypto",
         universe=universe,
@@ -684,6 +699,57 @@ def screen_active_symbol(
             client=client,
             quote=quote,
             screening_mode="crypto",
+            universe_size=len(universe),
+            required_kline_interval=required_kline_interval,
+            required_kline_count=required_kline_count,
+        ),
+        "selection": selection,
+    }
+
+
+def screen_active_all_symbol(
+    *,
+    excluded_symbols: Sequence[str],
+    quote: str = "USDT",
+    timeout: float = 30.0,
+    retries: int = 3,
+    request_sleep: float = 0.10,
+    required_kline_interval: Any = DEFAULT_AI_PROMPT_TIMEFRAME,
+    required_kline_count: int = DEFAULT_AI_PROMPT_CANDLE_COUNT,
+) -> Dict[str, Any]:
+    client = BinanceActiveMarketDataClient(
+        timeout=timeout,
+        retries=retries,
+        request_sleep=request_sleep,
+    )
+    logger.info(
+        "Active all-USDT trend screening started | %s",
+        format_log_details(
+            {
+                "quote": quote,
+                "required_kline_interval": required_kline_interval,
+                "required_kline_count": required_kline_count,
+                "excluded_symbols": sorted(_normalize_excluded_symbols(excluded_symbols)),
+            }
+        ),
+    )
+    exchange_info = client.exchange_info()
+    universe = build_usdt_perpetual_universe(exchange_info, quote=quote)
+    selection = _screen_active_universe(
+        screening_mode="all",
+        universe=universe,
+        client=client,
+        excluded_symbols=excluded_symbols,
+        required_kline_interval=required_kline_interval,
+        required_kline_count=required_kline_count,
+    )
+    if not selection.get("symbol"):
+        raise NoActiveCandidateError(_no_candidate_message("all", required_kline_interval, required_kline_count))
+    return {
+        "metadata": _metadata(
+            client=client,
+            quote=quote,
+            screening_mode="all",
             universe_size=len(universe),
             required_kline_interval=required_kline_interval,
             required_kline_count=required_kline_count,
@@ -751,6 +817,7 @@ __all__ = [
     "TREND_RANKING_FORMULA",
     "TREND_RANKING_METRIC",
     "TREND_SCORE_WEIGHTS",
+    "build_usdt_crypto_perpetual_universe",
     "build_usdt_tradfi_perpetual_universe",
     "build_usdt_perpetual_universe",
     "calculate_trend_metrics",
@@ -758,6 +825,7 @@ __all__ = [
     "extract_recent_kline_extremes",
     "is_tradfi_symbol_info",
     "score_trend_candidates",
+    "screen_active_all_symbol",
     "screen_active_symbol",
     "screen_active_tradfi_symbol",
     "select_active_symbol_from_trend_candidates",

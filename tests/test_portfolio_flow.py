@@ -119,6 +119,33 @@ class PortfolioFlowTests(unittest.TestCase):
         mocked_crypto.assert_called_once()
         mocked_tradfi.assert_not_called()
 
+    def test_all_active_candidate_screening_uses_all_usdt_screener(self):
+        with patch(
+            "src.strategy.portfolio_strategy.screen_active_all_symbol",
+            return_value={
+                "metadata": {"screening_mode": "all"},
+                "selection": {
+                    "symbol": "XAUUSDT",
+                    "screening_decision": "LONG",
+                    "screening_direction": "up",
+                    "selected": {"symbol": "XAUUSDT", "screening_decision": "LONG", "screening_direction": "up"},
+                },
+            },
+        ) as mocked_all, patch("src.strategy.portfolio_strategy.screen_active_symbol") as mocked_crypto, patch(
+            "src.strategy.portfolio_strategy.screen_active_tradfi_symbol"
+        ) as mocked_tradfi:
+            candidate = portfolio_strategy._screen_active_candidate(
+                slot=_active_slot("active_4", "all"),
+                config=_config(),
+                excluded_symbols=["ESUSDT"],
+            )
+
+        self.assertEqual(candidate["symbol"], "XAUUSDT")
+        self.assertEqual(candidate["screening_decision"], "LONG")
+        mocked_all.assert_called_once()
+        mocked_crypto.assert_not_called()
+        mocked_tradfi.assert_not_called()
+
     def test_prompt_market_context_fetches_padding_and_serializes_requested_count(self):
         raw_klines = [[index, "0", "0", "0", str(float(index + 1))] for index in range(170)]
 
@@ -426,7 +453,7 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertIn("ESUSDT", screen_exclusions[1][2])
         self.assertIn("NQUSDT", screen_exclusions[2][2])
         self.assertIn("GCUSDT", screen_exclusions[3][2])
-        self.assertEqual(screen_exclusions[3][1], "crypto")
+        self.assertEqual(screen_exclusions[3][1], "all")
 
     def test_slot_exception_is_captured_and_following_slots_continue(self):
         active1 = _active_slot("active_1")
