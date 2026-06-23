@@ -78,6 +78,8 @@ screener_retries: 3
 screener_request_sleep: 0.10
 ```
 
+ZAI direction and active-rebalance reasons are constrained to 300 English characters.
+
 ## Environment
 
 Create a local `.env` with:

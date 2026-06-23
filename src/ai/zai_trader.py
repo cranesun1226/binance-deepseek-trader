@@ -49,7 +49,7 @@ ZAI_HIGH_REASONING_EFFORT = "high"
 ZAI_MAX_REASONING_EFFORT = "max"
 ZAI_DEFAULT_REASONING_EFFORT = ZAI_MAX_REASONING_EFFORT
 ZAI_DEFAULT_TIMEOUT_SECONDS = 300.0
-DECISION_REASON_MAX_WORDS = 500
+DECISION_REASON_MAX_CHARS = 300
 _ONE_MILLION = 1_000_000
 _CJK_PATTERN = re.compile(r"[\u4e00-\u9fff]")
 
@@ -60,7 +60,7 @@ _SYSTEM_PROMPT = (
     "Analyze with a trend-following market consensus view, favoring the LONG or SHORT direction that a clear supermajority of reasonable momentum traders would broadly agree has the higher expected value. "
     "Use only English to reason and respond. "
     "Return exactly one json object containing only the decision and reason. "
-    f"The reason must be english, reasonable, data-based, and {DECISION_REASON_MAX_WORDS} words or fewer."
+    f"The reason must be english, reasonable, data-based, and {DECISION_REASON_MAX_CHARS} characters or fewer."
 )
 
 DecisionT = TypeVar("DecisionT", bound=BaseModel)
@@ -74,7 +74,7 @@ class TradeDirectionDecision(BaseModel):
     )
     reason: str = Field(
         description=(
-            f"English rationale in {DECISION_REASON_MAX_WORDS} words or fewer to decide the LONG or SHORT position."
+            f"English rationale in {DECISION_REASON_MAX_CHARS} characters or fewer to decide the LONG or SHORT position."
         )
     )
 
@@ -173,7 +173,7 @@ def _format_direction_prompt(payload: Dict[str, Any]) -> str:
         f"You are a world-class {symbol} trader.\n"
         "Return JSON only with exactly two fields: decision and reason.\n"
         "Analyze with a trend-following market consensus view, favoring the LONG or SHORT direction that a clear supermajority of reasonable trend-following traders would broadly agree has the higher expected value.\n"
-        f"The reason must be english, reasonable, data-based, and {DECISION_REASON_MAX_WORDS} words or fewer.\n"
+        f"The reason must be english, reasonable, data-based, and {DECISION_REASON_MAX_CHARS} characters or fewer.\n"
         "Examples: {\"decision\":\"LONG\",\"reason\":\"...\"} or {\"decision\":\"SHORT\",\"reason\":\"...\"}.\n"
         f"Market payload:\n{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"
     )
@@ -197,8 +197,8 @@ def _json_object_response_format() -> dict[str, str]:
     return {"type": "json_object"}
 
 
-def _decision_reason_word_count(value: str) -> int:
-    return len([part for part in value.split(" ") if part])
+def _decision_reason_char_count(value: str) -> int:
+    return len(value)
 
 
 def _normalize_decision_reason(value: Any) -> str:
@@ -209,8 +209,8 @@ def _normalize_decision_reason(value: Any) -> str:
         raise ValueError("ZAI decision reason must not be empty")
     if _CJK_PATTERN.search(reason):
         raise ValueError("ZAI decision reason must use English only")
-    if _decision_reason_word_count(reason) > DECISION_REASON_MAX_WORDS:
-        raise ValueError(f"ZAI decision reason must be {DECISION_REASON_MAX_WORDS} words or fewer")
+    if _decision_reason_char_count(reason) > DECISION_REASON_MAX_CHARS:
+        raise ValueError(f"ZAI decision reason must be {DECISION_REASON_MAX_CHARS} characters or fewer")
     return reason
 
 

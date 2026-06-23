@@ -37,8 +37,8 @@ class ZAIRebalancerTests(unittest.TestCase):
 
         prompt = zai_rebalancer._format_rebalance_prompt(payload)
         lowered_prompt = prompt.lower()
-        self.assertEqual(zai_rebalancer.REBALANCE_REASON_MAX_WORDS, 500)
-        self.assertIn("500 words or fewer", prompt)
+        self.assertEqual(zai_rebalancer.REBALANCE_REASON_MAX_CHARS, 300)
+        self.assertIn("300 characters or fewer", prompt)
         self.assertIn("compare both candidates directly", lowered_prompt)
         self.assertIn("selected setup is more rational", lowered_prompt)
         self.assertNotIn("current", lowered_prompt)

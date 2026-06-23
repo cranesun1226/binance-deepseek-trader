@@ -33,7 +33,7 @@ from src.ai.zai_trader import (
     ZAI_DEFAULT_TIMEOUT_SECONDS,
     ZAI_DIRECTION_MODEL,
     ZAI_GENERATE_MAX_RETRIES,
-    DECISION_REASON_MAX_WORDS,
+    DECISION_REASON_MAX_CHARS,
     ZAIEmptyContentError,
     ZAIStructuredResponse,
     ZaiClient,
@@ -54,7 +54,7 @@ from src.infra.logger import format_log_details, get_logger
 
 logger = get_logger("zai_rebalancer")
 
-REBALANCE_REASON_MAX_WORDS = DECISION_REASON_MAX_WORDS
+REBALANCE_REASON_MAX_CHARS = DECISION_REASON_MAX_CHARS
 
 _SYSTEM_PROMPT = (
     "You are a USDT perpetual futures trend-following momentum portfolio selector. "
@@ -65,7 +65,7 @@ _SYSTEM_PROMPT = (
     "In the reason, compare both candidates directly and explain why the selected setup is more rational. "
     "Use only English. "
     "Return exactly one JSON object containing only selected_symbol and reason. "
-    f"Keep reason data-based and {REBALANCE_REASON_MAX_WORDS} words or fewer."
+    f"Keep reason data-based and {REBALANCE_REASON_MAX_CHARS} characters or fewer."
 )
 
 
@@ -74,7 +74,7 @@ class ActiveRebalanceSelection(BaseModel):
 
     selected_symbol: str = Field(description="Return exactly one symbol from the supplied candidates.")
     reason: str = Field(
-        description=f"English rationale in {REBALANCE_REASON_MAX_WORDS} words or fewer for the selected symbol."
+        description=f"English rationale in {REBALANCE_REASON_MAX_CHARS} characters or fewer for the selected symbol."
     )
 
 
@@ -184,7 +184,7 @@ def _format_rebalance_prompt(payload: Dict[str, Any]) -> str:
         "Choose one allowed symbol; candidates are equal priority, so ignore order, familiarity, and wording.\n"
         "Keep each candidate's LONG/SHORT direction fixed.\n"
         "Select the fixed-direction setup with stronger trend-following momentum evidence and expected value.\n"
-        f"Reason: English, data-based, compare both candidates directly, explain why the selected setup is more rational, {REBALANCE_REASON_MAX_WORDS} words or fewer.\n"
+        f"Reason: English, data-based, compare both candidates directly, explain why the selected setup is more rational, {REBALANCE_REASON_MAX_CHARS} characters or fewer.\n"
         f"Allowed selected_symbol values: {json.dumps(symbols, ensure_ascii=False, separators=(',', ':'))}.\n"
         "Example: {\"selected_symbol\":\"SYMBOLUSDT\",\"reason\":\"...\"}.\n"
         f"Market payload:\n{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"
@@ -478,6 +478,6 @@ def evaluate_active_rebalance_symbol(
 
 __all__ = [
     "ActiveRebalanceSelection",
-    "REBALANCE_REASON_MAX_WORDS",
+    "REBALANCE_REASON_MAX_CHARS",
     "evaluate_active_rebalance_symbol",
 ]
