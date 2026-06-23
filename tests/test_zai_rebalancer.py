@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import Mock, patch
 
-from src.ai import deepseek_rebalancer
+from src.ai import zai_rebalancer
 
 
 def _candidate(symbol, decision, start):
@@ -14,9 +14,9 @@ def _candidate(symbol, decision, start):
     }
 
 
-class DeepSeekRebalancerTests(unittest.TestCase):
+class ZAIRebalancerTests(unittest.TestCase):
     def test_rebalance_payload_uses_equal_priority_candidate_shape(self):
-        payload = deepseek_rebalancer._build_rebalance_input_payload(
+        payload = zai_rebalancer._build_rebalance_input_payload(
             candidates=[
                 _candidate("NQUSDT", "SHORT", 200.0),
                 _candidate("ESUSDT", "LONG", 100.0),
@@ -35,9 +35,9 @@ class DeepSeekRebalancerTests(unittest.TestCase):
             self.assertNotIn("existing", candidate)
             self.assertNotIn("replacement", candidate)
 
-        prompt = deepseek_rebalancer._format_rebalance_prompt(payload)
+        prompt = zai_rebalancer._format_rebalance_prompt(payload)
         lowered_prompt = prompt.lower()
-        self.assertEqual(deepseek_rebalancer.REBALANCE_REASON_MAX_WORDS, 500)
+        self.assertEqual(zai_rebalancer.REBALANCE_REASON_MAX_WORDS, 500)
         self.assertIn("500 words or fewer", prompt)
         self.assertIn("compare both candidates directly", lowered_prompt)
         self.assertIn("selected setup is more rational", lowered_prompt)
@@ -46,9 +46,7 @@ class DeepSeekRebalancerTests(unittest.TestCase):
         self.assertNotIn("replacement", lowered_prompt)
 
     def test_structured_rebalance_call_parses_candidate_symbol_selection(self):
-        response = Mock()
-        response.status_code = 200
-        response.json.return_value = {
+        response_payload = {
             "id": "rebalance-id",
             "choices": [
                 {
@@ -63,13 +61,15 @@ class DeepSeekRebalancerTests(unittest.TestCase):
             ],
             "usage": {"prompt_tokens": 90, "completion_tokens": 20, "total_tokens": 110},
         }
+        client = Mock()
+        client.chat.completions.create.return_value = response_payload
 
-        with patch("src.ai.deepseek_rebalancer.get_deepseek_api_key", return_value="key"), patch(
-            "src.ai.deepseek_rebalancer.requests.post", return_value=response
-        ) as mocked_post:
-            result = deepseek_rebalancer._call_deepseek_rebalance_selection(
+        with patch("src.ai.zai_rebalancer.get_zai_api_key", return_value="key"), patch(
+            "src.ai.zai_rebalancer.ZaiClient", return_value=client
+        ) as mocked_client:
+            result = zai_rebalancer._call_zai_rebalance_selection(
                 prompt="prompt",
-                reasoning_effort="high",
+                reasoning_effort="max",
                 allowed_symbols=["ESUSDT", "NQUSDT"],
                 max_tokens=123,
                 timeout_seconds=45.0,
@@ -78,17 +78,16 @@ class DeepSeekRebalancerTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result.decision.selected_symbol, "ESUSDT")
         self.assertEqual(result.reasoning, "private reasoning")
-        payload = mocked_post.call_args.kwargs["json"]
+        mocked_client.assert_called_once_with(api_key="key")
+        payload = client.chat.completions.create.call_args.kwargs
+        self.assertEqual(payload["model"], "glm-5.2")
         self.assertEqual(payload["response_format"], {"type": "json_object"})
-        self.assertEqual(payload["reasoning_effort"], "high")
+        self.assertEqual(payload["reasoning_effort"], "max")
         self.assertEqual(payload["max_tokens"], 123)
         self.assertIn("selected_symbol", payload["messages"][0]["content"])
-        self.assertEqual(mocked_post.call_args.kwargs["timeout"], (10.0, 45.0))
 
     def test_rebalance_response_rejects_symbols_outside_supplied_candidates(self):
-        response = Mock()
-        response.status_code = 200
-        response.json.return_value = {
+        response_payload = {
             "choices": [
                 {
                     "message": {
@@ -98,28 +97,30 @@ class DeepSeekRebalancerTests(unittest.TestCase):
             ],
             "usage": {},
         }
+        client = Mock()
+        client.chat.completions.create.return_value = response_payload
 
-        with patch("src.ai.deepseek_rebalancer.get_deepseek_api_key", return_value="key"), patch(
-            "src.ai.deepseek_rebalancer.requests.post", return_value=response
-        ) as mocked_post, patch("src.ai.deepseek_rebalancer.time.sleep") as mocked_sleep, patch(
-            "src.ai.deepseek_rebalancer.logger"
+        with patch("src.ai.zai_rebalancer.get_zai_api_key", return_value="key"), patch(
+            "src.ai.zai_rebalancer.ZaiClient", return_value=client
+        ), patch("src.ai.zai_rebalancer.time.sleep") as mocked_sleep, patch(
+            "src.ai.zai_rebalancer.logger"
         ):
-            result = deepseek_rebalancer._call_deepseek_rebalance_selection(
+            result = zai_rebalancer._call_zai_rebalance_selection(
                 prompt="prompt",
                 reasoning_effort="high",
                 allowed_symbols=["ESUSDT", "NQUSDT"],
             )
 
         self.assertIsNone(result)
-        self.assertEqual(mocked_post.call_count, deepseek_rebalancer.DEEPSEEK_GENERATE_MAX_RETRIES)
-        self.assertEqual(mocked_sleep.call_count, deepseek_rebalancer.DEEPSEEK_GENERATE_MAX_RETRIES - 1)
+        self.assertEqual(client.chat.completions.create.call_count, zai_rebalancer.ZAI_GENERATE_MAX_RETRIES)
+        self.assertEqual(mocked_sleep.call_count, zai_rebalancer.ZAI_GENERATE_MAX_RETRIES - 1)
 
     def test_evaluate_rebalance_fails_closed_on_invalid_payload(self):
-        with patch("src.ai.deepseek_rebalancer._call_deepseek_rebalance_selection") as mocked_call, patch(
-            "src.ai.deepseek_rebalancer.logger"
+        with patch("src.ai.zai_rebalancer._call_zai_rebalance_selection") as mocked_call, patch(
+            "src.ai.zai_rebalancer.logger"
         ):
-            result = deepseek_rebalancer.evaluate_active_rebalance_symbol(
-                cycle_dir="/tmp/deepseek-rebalance-test",
+            result = zai_rebalancer.evaluate_active_rebalance_symbol(
+                cycle_dir="/tmp/zai-rebalance-test",
                 candidates=[_candidate("ESUSDT", "LONG", 100.0)],
                 timeframe="1h",
                 candle_count=3,

@@ -33,7 +33,7 @@ TREND_RANKING_FORMULA = (
 HOURLY_CANDLES_PER_DAY = 24
 HOURLY_CANDLES_PER_WEEK = HOURLY_CANDLES_PER_DAY * 7
 ENTRY_EXTREME_LOOKBACK = 24
-ENTRY_EXTREME_DISTANCE_LIMIT = 0.04
+ENTRY_EXTREME_DISTANCE_LIMIT = 0.05
 EPSILON = 1e-12
 MANAGED_SCREENING_DECISIONS = {"LONG", "SHORT"}
 
@@ -650,8 +650,8 @@ def _metadata(
         "directional_entry_filter": {
             "lookback": ENTRY_EXTREME_LOOKBACK,
             "distance_limit": ENTRY_EXTREME_DISTANCE_LIMIT,
-            "long_rule": "min(low) >= live_price * 0.96",
-            "short_rule": "max(high) <= live_price * 1.04",
+            "long_rule": "min(low) >= live_price * 0.95",
+            "short_rule": "max(high) <= live_price * 1.05",
         },
     }
 

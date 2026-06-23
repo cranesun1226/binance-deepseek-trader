@@ -1,1 +1,1 @@
-"""Test package for Binance DeepSeek Trader."""
+"""Test package for Binance ZAI Trader."""

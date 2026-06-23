@@ -1,4 +1,4 @@
-"""DeepSeek active-symbol rebalancing selector for Binance DeepSeek Trader."""
+"""ZAI active-symbol rebalancing selector for Binance ZAI Trader."""
 
 from __future__ import annotations
 
@@ -28,40 +28,31 @@ except ModuleNotFoundError:  # pragma: no cover - exercised in lightweight test 
     def Field(default: Any = None, **_kwargs: Any) -> Any:
         return default
 
-try:
-    import requests
-except ModuleNotFoundError:  # pragma: no cover - exercised in lightweight test environments
-    class _RequestsFallback:
-        def post(self, *_args, **_kwargs):
-            raise ModuleNotFoundError("requests is required to call DeepSeek APIs")
-
-    requests = _RequestsFallback()
-
-from src.ai.deepseek_trader import (
-    DEEPSEEK_API_URL,
-    DEEPSEEK_CONNECT_TIMEOUT_SECONDS,
-    DEEPSEEK_DEFAULT_REASONING_EFFORT,
-    DEEPSEEK_DEFAULT_TIMEOUT_SECONDS,
-    DEEPSEEK_DIRECTION_MODEL,
-    DEEPSEEK_GENERATE_MAX_RETRIES,
+from src.ai.zai_trader import (
+    ZAI_DEFAULT_REASONING_EFFORT,
+    ZAI_DEFAULT_TIMEOUT_SECONDS,
+    ZAI_DIRECTION_MODEL,
+    ZAI_GENERATE_MAX_RETRIES,
     DECISION_REASON_MAX_WORDS,
-    DeepSeekEmptyContentError,
-    DeepSeekStructuredResponse,
+    ZAIEmptyContentError,
+    ZAIStructuredResponse,
+    ZaiClient,
+    _coerce_completion_payload,
     _extract_content_text,
     _extract_message_payload,
-    _is_retryable_deepseek_error,
+    _is_retryable_zai_error,
     _json_object_response_format,
     _normalize_decision_reason,
     _normalize_reasoning_details,
     _normalize_reasoning_effort,
     _normalize_timeout_seconds,
     _to_jsonable,
-    estimate_deepseek_cost,
+    estimate_zai_cost,
 )
-from src.infra.env_loader import get_deepseek_api_key
+from src.infra.env_loader import get_zai_api_key
 from src.infra.logger import format_log_details, get_logger
 
-logger = get_logger("deepseek_rebalancer")
+logger = get_logger("zai_rebalancer")
 
 REBALANCE_REASON_MAX_WORDS = DECISION_REASON_MAX_WORDS
 
@@ -79,7 +70,7 @@ _SYSTEM_PROMPT = (
 
 
 class ActiveRebalanceSelection(BaseModel):
-    """Structured DeepSeek response for choosing one active symbol."""
+    """Structured ZAI response for choosing one active symbol."""
 
     selected_symbol: str = Field(description="Return exactly one symbol from the supplied candidates.")
     reason: str = Field(
@@ -208,17 +199,17 @@ def _parse_strict_rebalance_response(
     try:
         payload = json.loads(raw_response)
     except json.JSONDecodeError as exc:
-        raise ValueError("DeepSeek rebalance response must be a JSON object") from exc
+        raise ValueError("ZAI rebalance response must be a JSON object") from exc
 
     if not isinstance(payload, dict):
-        raise ValueError("DeepSeek rebalance response must be a JSON object")
+        raise ValueError("ZAI rebalance response must be a JSON object")
     if set(payload.keys()) != {"selected_symbol", "reason"}:
-        raise ValueError("DeepSeek rebalance response must contain only selected_symbol and reason fields")
+        raise ValueError("ZAI rebalance response must contain only selected_symbol and reason fields")
 
     allowed = {_normalize_symbol(symbol) for symbol in allowed_symbols if _normalize_symbol(symbol)}
     selected_symbol = _normalize_symbol(payload.get("selected_symbol"))
     if selected_symbol not in allowed:
-        raise ValueError("DeepSeek selected_symbol must exactly match one supplied candidate symbol")
+        raise ValueError("ZAI selected_symbol must exactly match one supplied candidate symbol")
     reason = _normalize_decision_reason(payload.get("reason"))
 
     canonical_response = json.dumps(
@@ -250,8 +241,8 @@ def _save_rebalance_analysis_data(
         if cycle_dir:
             os.makedirs(cycle_dir, exist_ok=True)
             normalized_mode = str(decision_mode or "active_rebalance").strip().lower() or "active_rebalance"
-            input_path = os.path.join(cycle_dir, f"deepseek_ai_{normalized_mode}_input.json")
-            output_path = os.path.join(cycle_dir, f"deepseek_ai_{normalized_mode}_output.json")
+            input_path = os.path.join(cycle_dir, f"zai_ai_{normalized_mode}_input.json")
+            output_path = os.path.join(cycle_dir, f"zai_ai_{normalized_mode}_output.json")
             with open(input_path, "w", encoding="utf-8") as file_obj:
                 json.dump(
                     {
@@ -280,7 +271,7 @@ def _save_rebalance_analysis_data(
                         "reasoning": reasoning,
                         "reasoning_details": reasoning_details,
                         "usage_metadata": usage_metadata or {},
-                        "estimated_cost": estimate_deepseek_cost(usage_metadata, model=model),
+                        "estimated_cost": estimate_zai_cost(usage_metadata, model=model),
                         "response_payload": response_payload or {},
                     },
                     file_obj,
@@ -289,26 +280,27 @@ def _save_rebalance_analysis_data(
                 )
             saved_paths = {"input_path": input_path, "output_path": output_path}
     except Exception as exc:
-        logger.warning("Failed to save DeepSeek rebalance analysis data: %s", exc)
+        logger.warning("Failed to save ZAI rebalance analysis data: %s", exc)
     return saved_paths
 
 
-def _call_deepseek_rebalance_selection(
+def _call_zai_rebalance_selection(
     *,
     prompt: str,
     reasoning_effort: str,
     allowed_symbols: Sequence[str],
-    model: str = DEEPSEEK_DIRECTION_MODEL,
+    model: str = ZAI_DIRECTION_MODEL,
     max_tokens: int = 8192,
-    timeout_seconds: float = DEEPSEEK_DEFAULT_TIMEOUT_SECONDS,
+    timeout_seconds: float = ZAI_DEFAULT_TIMEOUT_SECONDS,
     context_label: str = "active_rebalance",
-) -> Optional[DeepSeekStructuredResponse[ActiveRebalanceSelection]]:
-    api_key = get_deepseek_api_key()
+) -> Optional[ZAIStructuredResponse[ActiveRebalanceSelection]]:
+    api_key = get_zai_api_key()
     normalized_reasoning_effort = _normalize_reasoning_effort(reasoning_effort)
     normalized_timeout_seconds = _normalize_timeout_seconds(timeout_seconds)
+    client = ZaiClient(api_key=api_key)
 
     payload = {
-        "model": str(model or DEEPSEEK_DIRECTION_MODEL).strip() or DEEPSEEK_DIRECTION_MODEL,
+        "model": str(model or ZAI_DIRECTION_MODEL).strip() or ZAI_DIRECTION_MODEL,
         "messages": [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
@@ -317,22 +309,19 @@ def _call_deepseek_rebalance_selection(
         "reasoning_effort": normalized_reasoning_effort,
         "response_format": _json_object_response_format(),
         "max_tokens": max(1, int(max_tokens)),
-    }
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
+        "timeout": normalized_timeout_seconds,
     }
 
     last_error: Optional[Exception] = None
-    for attempt in range(1, DEEPSEEK_GENERATE_MAX_RETRIES + 1):
+    for attempt in range(1, ZAI_GENERATE_MAX_RETRIES + 1):
         try:
             logger.info(
-                "DeepSeek active rebalance call starting | %s",
+                "ZAI active rebalance call starting | %s",
                 format_log_details(
                     {
                         "context": context_label,
                         "attempt": attempt,
-                        "max_retries": DEEPSEEK_GENERATE_MAX_RETRIES,
+                        "max_retries": ZAI_GENERATE_MAX_RETRIES,
                         "model": payload["model"],
                         "reasoning_effort": normalized_reasoning_effort,
                         "timeout_seconds": normalized_timeout_seconds,
@@ -341,20 +330,8 @@ def _call_deepseek_rebalance_selection(
                     }
                 ),
             )
-            response = requests.post(
-                DEEPSEEK_API_URL,
-                headers=headers,
-                json=payload,
-                timeout=(DEEPSEEK_CONNECT_TIMEOUT_SECONDS, normalized_timeout_seconds),
-            )
-            if getattr(response, "status_code", 200) >= 400:
-                error = RuntimeError(f"DeepSeek HTTP {response.status_code}: {getattr(response, 'text', '')}")
-                setattr(error, "status_code", response.status_code)
-                raise error
-
-            response_payload = response.json()
-            if not isinstance(response_payload, dict):
-                raise ValueError(f"DeepSeek returned unexpected payload: {response_payload!r}")
+            response = client.chat.completions.create(**payload)
+            response_payload = _coerce_completion_payload(response)
             message_payload = _extract_message_payload(response_payload)
             raw_response = _extract_content_text(message_payload)
             if not raw_response:
@@ -362,8 +339,8 @@ def _call_deepseek_rebalance_selection(
                 choices = response_payload.get("choices")
                 if isinstance(choices, list) and choices and isinstance(choices[0], dict):
                     finish_reason = choices[0].get("finish_reason")
-                raise DeepSeekEmptyContentError(
-                    f"DeepSeek returned empty final content"
+                raise ZAIEmptyContentError(
+                    f"ZAI returned empty final content"
                     f" (context={context_label}, finish_reason={finish_reason})"
                 )
             decision = _parse_strict_rebalance_response(raw_response, allowed_symbols=allowed_symbols)
@@ -372,7 +349,7 @@ def _call_deepseek_rebalance_selection(
             reasoning_details = _normalize_reasoning_details(message_payload.get("reasoning_details"))
 
             logger.info(
-                "DeepSeek active rebalance call succeeded | %s",
+                "ZAI active rebalance call succeeded | %s",
                 format_log_details(
                     {
                         "context": context_label,
@@ -384,7 +361,7 @@ def _call_deepseek_rebalance_selection(
                     }
                 ),
             )
-            return DeepSeekStructuredResponse(
+            return ZAIStructuredResponse(
                 decision=decision,
                 raw_response=raw_response,
                 usage_metadata=dict(usage_metadata),
@@ -394,20 +371,20 @@ def _call_deepseek_rebalance_selection(
             )
         except Exception as exc:
             last_error = exc
-            if not _is_retryable_deepseek_error(exc) or attempt >= DEEPSEEK_GENERATE_MAX_RETRIES:
+            if not _is_retryable_zai_error(exc) or attempt >= ZAI_GENERATE_MAX_RETRIES:
                 break
             sleep_seconds = min(8.0, 2.0 ** (attempt - 1))
             logger.warning(
-                "DeepSeek active rebalance call failed (attempt %s/%s): %s. Retrying in %ss.",
+                "ZAI active rebalance call failed (attempt %s/%s): %s. Retrying in %ss.",
                 attempt,
-                DEEPSEEK_GENERATE_MAX_RETRIES,
+                ZAI_GENERATE_MAX_RETRIES,
                 exc,
                 sleep_seconds,
             )
             time.sleep(sleep_seconds)
 
     if last_error is not None:
-        logger.error("DeepSeek active rebalance call failed: %s", last_error, exc_info=True)
+        logger.error("ZAI active rebalance call failed: %s", last_error, exc_info=True)
     return None
 
 
@@ -417,10 +394,10 @@ def evaluate_active_rebalance_symbol(
     candidates: Sequence[Dict[str, Any]],
     timeframe: str,
     candle_count: int,
-    reasoning_effort: str = DEEPSEEK_DEFAULT_REASONING_EFFORT,
-    model: str = DEEPSEEK_DIRECTION_MODEL,
+    reasoning_effort: str = ZAI_DEFAULT_REASONING_EFFORT,
+    model: str = ZAI_DIRECTION_MODEL,
     max_tokens: int = 8192,
-    timeout_seconds: float = DEEPSEEK_DEFAULT_TIMEOUT_SECONDS,
+    timeout_seconds: float = ZAI_DEFAULT_TIMEOUT_SECONDS,
     analysis_sink: Optional[Dict[str, Any]] = None,
     decision_mode: str = "active_rebalance",
 ) -> Optional[ActiveRebalanceSelection]:
@@ -433,11 +410,11 @@ def evaluate_active_rebalance_symbol(
         )
         prompt = _format_rebalance_prompt(prompt_payload)
     except Exception as exc:
-        logger.error("Invalid DeepSeek active rebalance prompt payload: %s", exc)
+        logger.error("Invalid ZAI active rebalance prompt payload: %s", exc)
         return None
 
     allowed_symbols = [candidate["symbol"] for candidate in prompt_payload["candidates"]]
-    call_result = _call_deepseek_rebalance_selection(
+    call_result = _call_zai_rebalance_selection(
         prompt=prompt,
         reasoning_effort=reasoning_effort,
         allowed_symbols=allowed_symbols,
@@ -452,12 +429,12 @@ def evaluate_active_rebalance_symbol(
     decision = call_result.decision
     selected_symbol = _normalize_symbol(getattr(decision, "selected_symbol", ""))
     if selected_symbol not in set(allowed_symbols):
-        logger.error("DeepSeek returned invalid active rebalance selected_symbol=%s", selected_symbol)
+        logger.error("ZAI returned invalid active rebalance selected_symbol=%s", selected_symbol)
         return None
     try:
         normalized_reason = _normalize_decision_reason(getattr(decision, "reason", ""))
     except ValueError as exc:
-        logger.error("DeepSeek returned invalid active rebalance reason: %s", exc)
+        logger.error("ZAI returned invalid active rebalance reason: %s", exc)
         return None
 
     normalized_decision = ActiveRebalanceSelection(selected_symbol=selected_symbol, reason=normalized_reason)
@@ -490,7 +467,7 @@ def evaluate_active_rebalance_symbol(
                 "reasoning": call_result.reasoning,
                 "reasoning_details": list(call_result.reasoning_details),
                 "usage_metadata": dict(call_result.usage_metadata or {}),
-                "estimated_cost": estimate_deepseek_cost(call_result.usage_metadata, model=model),
+                "estimated_cost": estimate_zai_cost(call_result.usage_metadata, model=model),
                 "response_payload": dict(call_result.response_payload or {}),
                 **saved_paths,
             }

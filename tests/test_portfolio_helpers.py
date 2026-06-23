@@ -13,7 +13,7 @@ class PortfolioHelperTests(unittest.TestCase):
         self.assertEqual([slot.target_margin_ratio for slot in slots], [0.25] * 4)
         self.assertEqual([slot.active_screening_mode for slot in slots], ["tradfi", "tradfi", "tradfi", "all"])
 
-    def test_deepseek_reasoning_effort_normalization_matches_api_values(self):
+    def test_zai_reasoning_effort_normalization_matches_api_values(self):
         self.assertEqual(portfolio_strategy._normalize_reasoning_effort("xhigh"), "max")
         self.assertEqual(portfolio_strategy._normalize_reasoning_effort("max"), "max")
         self.assertEqual(portfolio_strategy._normalize_reasoning_effort("medium"), "high")
@@ -36,7 +36,7 @@ class PortfolioHelperTests(unittest.TestCase):
 
         self.assertEqual(target, 495.0)
 
-    def test_slot_leverage_defaults_active_to_2x(self):
+    def test_slot_leverage_defaults_active_to_1x(self):
         active = portfolio_strategy.PortfolioSlot(
             slot_id="active_1",
             label="active1",
@@ -44,7 +44,7 @@ class PortfolioHelperTests(unittest.TestCase):
             target_margin_ratio=0.25,
         )
 
-        self.assertEqual(portfolio_strategy._leverage_for_slot(active, {}), 2)
+        self.assertEqual(portfolio_strategy._leverage_for_slot(active, {}), 1)
 
     def test_ensure_symbol_leverage_fails_closed_on_mismatch(self):
         with patch("src.strategy.portfolio_strategy.set_leverage", return_value=1):
@@ -68,66 +68,68 @@ class PortfolioHelperTests(unittest.TestCase):
         self.assertEqual(result["requested_leverage"], 2)
         self.assertEqual(result["actual_leverage"], 1)
 
-    def test_fixed_stop_loss_is_entry_price_four_percent(self):
+    def test_fixed_stop_loss_is_entry_price_five_percent(self):
         self.assertEqual(
             portfolio_strategy._resolve_fixed_stop_loss_price(
                 direction="long",
                 entry_price=100.0,
-                stop_loss_pct=0.04,
+                stop_loss_pct=0.05,
             ),
-            96.0,
+            95.0,
         )
         self.assertEqual(
             portfolio_strategy._resolve_fixed_stop_loss_price(
                 direction="short",
                 entry_price=100.0,
-                stop_loss_pct=0.04,
+                stop_loss_pct=0.05,
             ),
-            104.0,
+            105.0,
         )
 
-    def test_trigger_is_per_slot_last_llm_anchor(self):
-        slot_state = {
-            "last_ai_trigger_price": 100.0,
-            "last_ai_decision": "LONG",
-            "next_trigger_down": 99.0,
-            "next_trigger_up": 101.0,
-        }
-
-        waiting = portfolio_strategy._determine_ai_trigger(
-            has_position=True,
+    def test_ai_trigger_info_has_no_price_distance_window(self):
+        waiting = portfolio_strategy._build_ai_trigger_info(
+            reason="holding_until_rebalance",
             current_price=100.5,
-            slot_state=slot_state,
-            trigger_pct_usdt=1.0,
+            should_trigger=False,
         )
-        triggered = portfolio_strategy._determine_ai_trigger(
-            has_position=True,
+        triggered = portfolio_strategy._build_ai_trigger_info(
+            reason="active_candidate_selected",
             current_price=101.01,
-            slot_state=slot_state,
-            trigger_pct_usdt=1.0,
         )
 
         self.assertFalse(waiting["should_trigger"])
+        self.assertEqual(waiting["reason"], "holding_until_rebalance")
+        self.assertEqual(waiting["trigger_price"], 100.5)
+        self.assertNotIn("next_trigger_down", waiting)
         self.assertTrue(triggered["should_trigger"])
-        self.assertEqual(triggered["reason"], "price_distance_reached")
+        self.assertEqual(triggered["reason"], "active_candidate_selected")
+        self.assertEqual(triggered["trigger_price"], 101.01)
 
-    def test_missing_ai_decision_for_existing_position_forces_llm_trigger(self):
-        slot_state = {
-            "last_ai_trigger_price": 100.0,
-            "last_ai_decision": None,
-            "next_trigger_down": 99.0,
-            "next_trigger_up": 101.0,
-        }
-
-        triggered = portfolio_strategy._determine_ai_trigger(
-            has_position=True,
-            current_price=100.5,
-            slot_state=slot_state,
-            trigger_pct_usdt=1.0,
+    def test_normalized_state_migrates_old_ai_trigger_timestamp_only(self):
+        slot = portfolio_strategy.PortfolioSlot(
+            slot_id="active_1",
+            label="active1",
+            kind="active",
+            target_margin_ratio=0.25,
         )
 
-        self.assertTrue(triggered["should_trigger"])
-        self.assertEqual(triggered["reason"], "missing_ai_decision")
+        state = portfolio_strategy._normalize_slot_state(
+            slot,
+            {
+                "symbol": "ESUSDT",
+                "last_ai_triggered_at": "2026-01-01T00:00:00Z",
+                "last_ai_trigger_price": 100.0,
+                "next_trigger_down": 99.0,
+                "next_trigger_up": 101.0,
+                "last_ai_decision": "LONG",
+            },
+        )
+
+        self.assertEqual(state["last_ai_decision_at"], "2026-01-01T00:00:00Z")
+        self.assertEqual(state["last_ai_decision"], "LONG")
+        self.assertNotIn("last_ai_trigger_price", state)
+        self.assertNotIn("next_trigger_down", state)
+        self.assertNotIn("next_trigger_up", state)
 
     def test_rebalance_rejects_invalid_decision_without_inferring_direction(self):
         result = portfolio_strategy._rebalance_existing_position(
@@ -147,7 +149,7 @@ class PortfolioHelperTests(unittest.TestCase):
             leverage=1,
             available_notional_cap=100.0,
             rebalance_threshold_pct=0.02,
-            stop_loss_pct=0.04,
+            stop_loss_pct=0.05,
         )
 
         self.assertFalse(result["success"])
@@ -183,7 +185,7 @@ class PortfolioHelperTests(unittest.TestCase):
                 leverage=1,
                 available_notional_cap=47.0,
                 rebalance_threshold_pct=0.02,
-                stop_loss_pct=0.04,
+                stop_loss_pct=0.05,
             )
 
         self.assertTrue(result["success"])
@@ -215,7 +217,7 @@ class PortfolioHelperTests(unittest.TestCase):
                 leverage=1,
                 available_notional_cap=0.0,
                 rebalance_threshold_pct=0.02,
-                stop_loss_pct=0.04,
+                stop_loss_pct=0.05,
             )
 
         self.assertTrue(result["success"])
@@ -250,7 +252,7 @@ class PortfolioHelperTests(unittest.TestCase):
                 reference_price=100.0,
                 leverage=1,
                 available_notional_cap=200.0,
-                stop_loss_pct=0.04,
+                stop_loss_pct=0.05,
             )
 
         self.assertTrue(result["success"])
@@ -262,12 +264,12 @@ class PortfolioHelperTests(unittest.TestCase):
         mocked_sync.assert_called_once()
         self.assertEqual(mocked_sync.call_args.kwargs["expected_decision"], "SHORT")
 
-    def test_trigger_levels_keep_precision_for_low_priced_symbols(self):
-        levels = portfolio_strategy._build_trigger_levels(0.093455, 1.0)
+    def test_ai_trigger_info_keeps_precision_for_low_priced_symbols(self):
+        info = portfolio_strategy._build_ai_trigger_info(reason="active_candidate_selected", current_price=0.093455)
 
-        self.assertEqual(levels["trigger_price"], 0.093455)
-        self.assertLess(levels["next_trigger_down"], levels["trigger_price"])
-        self.assertGreater(levels["next_trigger_up"], levels["trigger_price"])
+        self.assertEqual(info["trigger_price"], 0.093455)
+        self.assertNotIn("next_trigger_down", info)
+        self.assertNotIn("next_trigger_up", info)
 
     def test_removed_slots_are_dropped_from_normalized_state(self):
         slots = portfolio_strategy._build_portfolio_slots({})

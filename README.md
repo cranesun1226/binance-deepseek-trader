@@ -1,6 +1,6 @@
-# Binance DeepSeek Trader
+# Binance ZAI Trader
 
-Binance USDT-M futures portfolio runner powered by a trend-quality active screener, DeepSeek direction checks, native stop-loss synchronization, and Telegram notifications.
+Binance USDT-M futures portfolio runner powered by a trend-quality active screener, ZAI GLM-5.2 direction checks, native stop-loss synchronization, and Telegram notifications.
 
 ## Strategy
 
@@ -8,8 +8,8 @@ Binance USDT-M futures portfolio runner powered by a trend-quality active screen
 - Active 1, 2, and 3 screen TradFi USDT-M perpetual symbols.
 - Active 4 screens the full USDT-M perpetual universe, including TradFi and non-TradFi crypto symbols.
 - This keeps three dedicated TradFi slots while allowing the fourth slot to select the strongest overall USDT setup.
-- All active slots use 2x leverage by default and a fixed 4% stop loss from entry.
-- Open active positions use the 1% price trigger for DeepSeek trader direction checks and the configured active re-screen interval, default 24 hours, for universe ranking and symbol review.
+- All active slots use 1x leverage by default and a fixed 5% stop loss from entry.
+- ZAI is called only when an active slot has no open position or when the configured active re-screen interval is due, default 24 hours.
 
 ## Active Screener
 
@@ -36,10 +36,10 @@ Flat paths or endpoint returns that do not align with the fitted trend are skipp
 
 Before ranking, the screener applies the directional entry filter against the live lookup price:
 
-- `LONG`: `min(low over latest 24 1h klines) >= live_price * 0.96`
-- `SHORT`: `max(high over latest 24 1h klines) <= live_price * 1.04`
+- `LONG`: `min(low over latest 24 1h klines) >= live_price * 0.95`
+- `SHORT`: `max(high over latest 24 1h klines) <= live_price * 1.05`
 
-The trend direction is screening metadata. After a fresh candidate is selected for an empty active slot, the DeepSeek trader flow evaluates the final `LONG` or `SHORT` execution direction for entry. In active rebalancing, the rebalancer uses the current position direction and the screened candidate direction directly.
+The trend direction is screening metadata. After a fresh candidate is selected for an empty active slot, the ZAI trader flow evaluates the final `LONG` or `SHORT` execution direction for entry. In active rebalancing, the rebalancer uses the current position direction and the screened candidate direction directly.
 
 ## Active Review
 
@@ -47,31 +47,29 @@ When a slot has an open position, it is held until one of these happens:
 
 - the fixed exchange stop loss is hit
 - the position is manually or externally removed
-- price moves by the configured trigger percentage from the last DeepSeek trader anchor
 - the 24h active review is due
 
-On a price-triggered review, DeepSeek trader rechecks the current symbol direction and the existing position is kept, resized, or reversed as needed. During the 24h review, the screener re-ranks the slot's own universe while allowing the current symbol. If the current symbol remains top-ranked, DeepSeek trader reviews direction again. If a different candidate is top-ranked, DeepSeek rebalancer directly compares the current position direction against the screened candidate direction and chooses one symbol. The current position is closed only when the new candidate is selected.
+Between 24h reviews, the runtime only checks exchange state and synchronizes the fixed 5% stop loss. During the 24h review, the screener re-ranks the slot's own universe while allowing the current symbol. If the current symbol remains top-ranked, ZAI trader reviews direction again. If a different candidate is top-ranked, ZAI rebalancer directly compares the current position direction against the screened candidate direction and chooses one symbol. The current position is closed only when the new candidate is selected.
 
 ## Configuration
 
-Edit [setting.yaml](/Users/haksunlee/investment/binance-deepseek-trader/setting.yaml) for runtime settings:
+Edit [setting.yaml](setting.yaml) for runtime settings:
 
 ```yaml
 cycle_interval_seconds: 60
-trigger_pct_usdt: 1.0
 
 ai_prompt_timeframe: 1h
 ai_prompt_candle_count: 168
 
-deepseek_model: deepseek-v4-flash
-deepseek_reasoning_effort: max
-deepseek_max_tokens: 8192
-deepseek_timeout_seconds: 300.0
+zai_model: glm-5.2
+zai_reasoning_effort: max
+zai_max_tokens: 8192
+zai_timeout_seconds: 300.0
 
-active_leverage: 2
+active_leverage: 1
 capital_usage_ratio: 0.99
 rebalance_threshold_pct: 0.02
-stop_loss_pct: 0.04
+stop_loss_pct: 0.05
 active_rescreen_interval_hours: 24
 
 screener_quote: USDT
@@ -87,7 +85,8 @@ Create a local `.env` with:
 ```bash
 BINANCE_API_KEY=...
 BINANCE_API_SECRET=...
-DEEPSEEK_API_KEY=...
+ZAI_API_ID=...
+ZAI_API_KEY=...
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_CHAT_ID=...
 ```
@@ -108,7 +107,7 @@ python main.py
 Useful checks:
 
 ```bash
-python -m py_compile main.py src/ai/deepseek_trader.py src/ai/deepseek_rebalancer.py src/strategy/portfolio_strategy.py src/strategy/active_screener.py src/strategy/scheduler.py src/binance/trade_position.py src/infra/env_loader.py src/infra/telegram.py
+python -m py_compile main.py src/ai/zai_trader.py src/ai/zai_rebalancer.py src/strategy/portfolio_strategy.py src/strategy/active_screener.py src/strategy/scheduler.py src/binance/trade_position.py src/infra/env_loader.py src/infra/telegram.py
 python -m unittest discover
 ```
 
@@ -117,8 +116,8 @@ python -m unittest discover
 ```text
 src/
   ai/
-    deepseek_trader.py       # single-symbol direction decision
-    deepseek_rebalancer.py   # current-vs-candidate active review selector
+    zai_trader.py            # single-symbol direction decision
+    zai_rebalancer.py        # current-vs-candidate active review selector
   binance/
     market_data.py
     trade_position.py
@@ -132,4 +131,4 @@ src/
     scheduler.py
 ```
 
-`db/` stores DeepSeek decisions, active screening outputs, and material position-event artifacts. Routine mechanical cycles are not persisted unless they include a decision, screening event, unmanaged close, or material position change.
+`db/` stores ZAI decisions, active screening outputs, and material position-event artifacts. Routine mechanical cycles are not persisted unless they include a decision, screening event, unmanaged close, or material position change.

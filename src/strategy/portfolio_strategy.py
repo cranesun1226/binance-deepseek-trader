@@ -1,4 +1,4 @@
-"""Four-slot Binance futures portfolio runtime powered by DeepSeek."""
+"""Four-slot Binance futures portfolio runtime powered by ZAI."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional, Sequence
 
-from src.ai.deepseek_rebalancer import evaluate_active_rebalance_symbol
-from src.ai.deepseek_trader import evaluate_trade_direction
+from src.ai.zai_rebalancer import evaluate_active_rebalance_symbol
+from src.ai.zai_trader import evaluate_trade_direction
 from src.binance.market_data import fetch_klines, parse_klines
 from src.binance.trade_position import (
     adjust_qty_for_symbol,
@@ -47,12 +47,11 @@ from src.strategy.runtime_config import (
     DEFAULT_ACTIVE_LEVERAGE,
     DEFAULT_ACTIVE_RESCREEN_INTERVAL_HOURS,
     DEFAULT_CAPITAL_USAGE_RATIO,
-    DEFAULT_DEEPSEEK_MAX_TOKENS,
-    DEFAULT_DEEPSEEK_MODEL,
-    DEFAULT_DEEPSEEK_REASONING_EFFORT,
-    DEFAULT_DEEPSEEK_TIMEOUT_SECONDS,
+    DEFAULT_ZAI_MAX_TOKENS,
+    DEFAULT_ZAI_MODEL,
+    DEFAULT_ZAI_REASONING_EFFORT,
+    DEFAULT_ZAI_TIMEOUT_SECONDS,
     DEFAULT_REBALANCE_THRESHOLD_PCT,
-    DEFAULT_TRIGGER_PCT_USDT,
     load_runtime_config,
 )
 
@@ -66,7 +65,6 @@ STATE_VERSION = "1.0.0"
 SYMBOL_BANS_STATE_KEY = "symbol_bans"
 SYMBOL_BAN_REASON_REGION_RESTRICTED = "binance_region_restricted"
 SYMBOL_BAN_SCOPE_ACTIVE_SCREENER = "active_screener"
-TRIGGER_PRICE_DIGITS = 8
 MANAGED_DECISIONS = {"LONG", "SHORT"}
 ACTIVE_SCREENING_MODES = {"all", "crypto", "tradfi"}
 ACTIVE_SCREENING_MODE_ALIASES = {
@@ -84,8 +82,6 @@ ACTIVE_SLOT_SPECS = (
 )
 PORTFOLIO_SLOT_TARGET_MARGIN_RATIO = 0.25
 MATERIAL_POSITION_RECORD_ACTIONS = {
-    "active_price_review_failed_position_kept",
-    "active_price_review_position_kept",
     "active_rebalance_review_failed_position_kept",
     "active_rebalance_position_kept",
     "active_rebalance_selection_failed_position_kept",
@@ -105,7 +101,7 @@ MATERIAL_POSITION_RECORD_ACTIONS = {
     "set_leverage_failed",
     "slot_execution_failed",
     "switch_close_failed",
-    "switched_active_position_by_deepseek",
+    "switched_active_position_by_zai",
     "switched_active_position_by_rebalancer",
 }
 NotificationCallback = Optional[Callable[[str, Dict[str, Any]], Any]]
@@ -238,47 +234,31 @@ def _normalize_ratio(value: Any, default: float) -> float:
     return float(parsed)
 
 
-def _normalize_trigger_percent(value: Any, default: float) -> float:
-    parsed_value = value
-    if isinstance(value, str):
-        parsed_value = value.strip()
-        if parsed_value.endswith("%"):
-            parsed_value = parsed_value[:-1]
-    parsed = _safe_float(parsed_value, default)
-    if parsed is None or parsed <= 0.0 or parsed >= 100.0:
-        parsed = default
-    return float(parsed)
-
-
 def _normalize_reasoning_effort(value: Any) -> str:
-    normalized = str(value or DEFAULT_DEEPSEEK_REASONING_EFFORT).strip().lower()
+    normalized = str(value or DEFAULT_ZAI_REASONING_EFFORT).strip().lower()
     if normalized in {"max", "xhigh"}:
         return "max"
     if normalized in {"low", "medium", "high"}:
         return "high"
     if normalized in {"", "none", "minimal"}:
-        return DEFAULT_DEEPSEEK_REASONING_EFFORT
+        return DEFAULT_ZAI_REASONING_EFFORT
     logger.warning(
-        "Unsupported deepseek_reasoning_effort=%s; using %s",
+        "Unsupported zai_reasoning_effort=%s; using %s",
         value,
-        DEFAULT_DEEPSEEK_REASONING_EFFORT,
+        DEFAULT_ZAI_REASONING_EFFORT,
     )
-    return DEFAULT_DEEPSEEK_REASONING_EFFORT
+    return DEFAULT_ZAI_REASONING_EFFORT
 
 
 def _load_strategy_config() -> Dict[str, Any]:
     raw = load_runtime_config(CONFIG_PATH)
     return {
         "cycle_interval_seconds": _normalize_positive_int(raw.get("cycle_interval_seconds", 60), 60),
-        "trigger_pct_usdt": _normalize_trigger_percent(
-            raw.get("trigger_pct_usdt", DEFAULT_TRIGGER_PCT_USDT),
-            DEFAULT_TRIGGER_PCT_USDT,
-        ),
         "active_leverage": _normalize_positive_int(
             raw.get("active_leverage", DEFAULT_ACTIVE_LEVERAGE),
             DEFAULT_ACTIVE_LEVERAGE,
         ),
-        "stop_loss_pct": _normalize_ratio(raw.get("stop_loss_pct", 0.04), 0.04),
+        "stop_loss_pct": _normalize_ratio(raw.get("stop_loss_pct", 0.05), 0.05),
         "capital_usage_ratio": min(
             1.0,
             _normalize_ratio(raw.get("capital_usage_ratio", DEFAULT_CAPITAL_USAGE_RATIO), DEFAULT_CAPITAL_USAGE_RATIO),
@@ -299,16 +279,16 @@ def _load_strategy_config() -> Dict[str, Any]:
             raw.get("ai_prompt_candle_count", DEFAULT_AI_PROMPT_CANDLE_COUNT),
             DEFAULT_AI_PROMPT_CANDLE_COUNT,
         ),
-        "deepseek_model": str(raw.get("deepseek_model") or DEFAULT_DEEPSEEK_MODEL).strip()
-        or DEFAULT_DEEPSEEK_MODEL,
-        "deepseek_reasoning_effort": _normalize_reasoning_effort(raw.get("deepseek_reasoning_effort")),
-        "deepseek_max_tokens": _normalize_positive_int(
-            raw.get("deepseek_max_tokens", DEFAULT_DEEPSEEK_MAX_TOKENS),
-            DEFAULT_DEEPSEEK_MAX_TOKENS,
+        "zai_model": str(raw.get("zai_model") or DEFAULT_ZAI_MODEL).strip()
+        or DEFAULT_ZAI_MODEL,
+        "zai_reasoning_effort": _normalize_reasoning_effort(raw.get("zai_reasoning_effort")),
+        "zai_max_tokens": _normalize_positive_int(
+            raw.get("zai_max_tokens", DEFAULT_ZAI_MAX_TOKENS),
+            DEFAULT_ZAI_MAX_TOKENS,
         ),
-        "deepseek_timeout_seconds": _normalize_positive_float(
-            raw.get("deepseek_timeout_seconds", DEFAULT_DEEPSEEK_TIMEOUT_SECONDS),
-            DEFAULT_DEEPSEEK_TIMEOUT_SECONDS,
+        "zai_timeout_seconds": _normalize_positive_float(
+            raw.get("zai_timeout_seconds", DEFAULT_ZAI_TIMEOUT_SECONDS),
+            DEFAULT_ZAI_TIMEOUT_SECONDS,
         ),
         "screener_quote": str(raw.get("screener_quote") or "USDT").strip().upper() or "USDT",
         "screener_timeout": _normalize_positive_float(raw.get("screener_timeout", 30.0), 30.0),
@@ -445,7 +425,7 @@ def _normalize_trigger_price(value: Any) -> Optional[float]:
     parsed = _safe_float(value, None)
     if parsed is None or parsed <= 0.0:
         return None
-    return float(round(float(parsed), TRIGGER_PRICE_DIGITS))
+    return float(round(float(parsed), 8))
 
 
 def _format_price(value: Any) -> Optional[float]:
@@ -637,86 +617,14 @@ def _fetch_prompt_market_context(
     }
 
 
-def _build_trigger_levels(anchor_price: float, trigger_pct_usdt: float) -> Dict[str, float]:
-    normalized_anchor_price = _normalize_trigger_price(anchor_price)
-    if normalized_anchor_price is None:
-        raise ValueError("anchor price must be positive")
-    trigger_ratio = float(trigger_pct_usdt) / 100.0
-    next_trigger_down = _normalize_trigger_price(normalized_anchor_price * (1.0 - trigger_ratio))
-    next_trigger_up = _normalize_trigger_price(normalized_anchor_price * (1.0 + trigger_ratio))
-    if next_trigger_down is None or next_trigger_up is None or next_trigger_down >= next_trigger_up:
-        raise ValueError("trigger percent produced invalid price levels")
-    return {
-        "trigger_price": normalized_anchor_price,
-        "next_trigger_down": next_trigger_down,
-        "next_trigger_up": next_trigger_up,
-    }
-
-
-def _determine_ai_trigger(
-    *,
-    has_position: bool,
-    current_price: float,
-    slot_state: Dict[str, Any],
-    trigger_pct_usdt: float,
-) -> Dict[str, Any]:
-    current_trigger_price = _normalize_trigger_price(current_price)
-    if current_trigger_price is None:
+def _build_ai_trigger_info(*, reason: str, current_price: Optional[float], should_trigger: bool = True) -> Dict[str, Any]:
+    trigger_price = _normalize_trigger_price(current_price)
+    if current_price is not None and trigger_price is None:
         raise ValueError("current_price must be positive")
-    if not has_position:
-        next_levels = _build_trigger_levels(current_price, trigger_pct_usdt)
-        return {
-            "should_trigger": True,
-            "reason": "no_position",
-            **next_levels,
-        }
-    if _normalize_ai_decision(slot_state.get("last_ai_decision")) is None:
-        next_levels = _build_trigger_levels(current_price, trigger_pct_usdt)
-        return {
-            "should_trigger": True,
-            "reason": "missing_ai_decision",
-            **next_levels,
-        }
-
-    active_trigger_down = _normalize_trigger_price(slot_state.get("next_trigger_down"))
-    active_trigger_up = _normalize_trigger_price(slot_state.get("next_trigger_up"))
-    has_valid_window = active_trigger_down is not None and active_trigger_up is not None and active_trigger_down < active_trigger_up
-    if not has_valid_window:
-        last_anchor = _normalize_trigger_price(slot_state.get("last_ai_trigger_price"))
-        if last_anchor is not None:
-            anchor_levels = _build_trigger_levels(last_anchor, trigger_pct_usdt)
-            active_trigger_down = anchor_levels["next_trigger_down"]
-            active_trigger_up = anchor_levels["next_trigger_up"]
-            has_valid_window = True
-
-    if not has_valid_window:
-        next_levels = _build_trigger_levels(current_price, trigger_pct_usdt)
-        return {
-            "should_trigger": True,
-            "reason": "missing_llm_anchor",
-            **next_levels,
-        }
-
-    if current_price >= float(active_trigger_up):
-        return {
-            "should_trigger": True,
-            "reason": "price_distance_reached",
-            "trigger_direction": "up",
-            **_build_trigger_levels(current_price, trigger_pct_usdt),
-        }
-    if current_price <= float(active_trigger_down):
-        return {
-            "should_trigger": True,
-            "reason": "price_distance_reached",
-            "trigger_direction": "down",
-            **_build_trigger_levels(current_price, trigger_pct_usdt),
-        }
     return {
-        "should_trigger": False,
-        "reason": "waiting_for_next_price_trigger",
-        "trigger_price": None,
-        "next_trigger_down": active_trigger_down,
-        "next_trigger_up": active_trigger_up,
+        "should_trigger": bool(should_trigger),
+        "reason": str(reason or "").strip() or "unknown",
+        "trigger_price": trigger_price,
     }
 
 
@@ -725,11 +633,8 @@ def _empty_slot_state(slot: PortfolioSlot) -> Dict[str, Any]:
         "slot_id": slot.slot_id,
         "kind": slot.kind,
         "symbol": None,
-        "last_ai_trigger_price": None,
-        "last_ai_triggered_at": None,
+        "last_ai_decision_at": None,
         "last_ai_decision": None,
-        "next_trigger_down": None,
-        "next_trigger_up": None,
     }
     if slot.kind == "active":
         state["active_screening_mode"] = _active_screening_mode(slot)
@@ -770,11 +675,8 @@ def _normalize_slot_state(slot: PortfolioSlot, raw_state: Any) -> Dict[str, Any]
     active_mode_changed = False
     if isinstance(raw_state, dict):
         preserved_keys = [
-            "last_ai_trigger_price",
-            "last_ai_triggered_at",
+            "last_ai_decision_at",
             "last_ai_decision",
-            "next_trigger_down",
-            "next_trigger_up",
         ]
         if slot.kind == "active":
             persisted_mode = _normalize_active_screening_mode_value(raw_state.get("active_screening_mode"))
@@ -788,6 +690,8 @@ def _normalize_slot_state(slot: PortfolioSlot, raw_state: Any) -> Dict[str, Any]
         for key in preserved_keys:
             if key in raw_state:
                 state[key] = raw_state.get(key)
+        if not state.get("last_ai_decision_at") and raw_state.get("last_ai_triggered_at"):
+            state["last_ai_decision_at"] = raw_state.get("last_ai_triggered_at")
         if slot.kind == "active":
             state["symbol"] = _normalize_symbol(raw_state.get("symbol"))
             state["previous_active_symbol"] = _normalize_symbol(
@@ -874,14 +778,12 @@ def _normalize_portfolio_state(previous_state: Optional[Dict[str, Any]], slots: 
     }
 
 
-def _update_slot_trigger_state(
+def _update_slot_ai_state(
     slot_state: Dict[str, Any],
     *,
     ai_triggered: bool,
-    trigger_info: Dict[str, Any],
     ai_decision: Optional[str] = None,
     symbol: Optional[str] = None,
-    update_anchor: bool = False,
 ) -> Dict[str, Any]:
     updated = dict(slot_state)
     if symbol is not None:
@@ -890,14 +792,11 @@ def _update_slot_trigger_state(
         if normalized_symbol and current_symbol and normalized_symbol != current_symbol:
             updated["previous_active_symbol"] = current_symbol
         updated["symbol"] = normalized_symbol
-    if ai_triggered or update_anchor:
-        updated["last_ai_trigger_price"] = _normalize_trigger_price(trigger_info.get("trigger_price"))
-        updated["last_ai_triggered_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    if ai_triggered:
+        updated["last_ai_decision_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     normalized_decision = _normalize_ai_decision(ai_decision)
     if normalized_decision:
         updated["last_ai_decision"] = normalized_decision
-    updated["next_trigger_down"] = _normalize_trigger_price(trigger_info.get("next_trigger_down"))
-    updated["next_trigger_up"] = _normalize_trigger_price(trigger_info.get("next_trigger_up"))
     return updated
 
 
@@ -907,11 +806,8 @@ def _clear_active_slot_state(slot_state: Dict[str, Any]) -> Dict[str, Any]:
         updated.get("previous_active_symbol")
     )
     updated["symbol"] = None
-    updated["last_ai_trigger_price"] = None
-    updated["last_ai_triggered_at"] = None
+    updated["last_ai_decision_at"] = None
     updated["last_ai_decision"] = None
-    updated["next_trigger_down"] = None
-    updated["next_trigger_up"] = None
     updated["entered_at"] = None
     updated["last_active_rank_checked_at"] = None
     updated["previous_active_symbol"] = previous_symbol
@@ -1639,7 +1535,7 @@ def _record_active_screening_result(result: Dict[str, Any], candidate: Dict[str,
     result["screening_triggered"] = True
     result["screening_decision"] = decision
     result["screening_direction"] = candidate.get("screening_direction")
-    result["decision_source"] = "deepseek_trader"
+    result["decision_source"] = "zai_trader"
 
 
 def _visible_active_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
@@ -1850,16 +1746,16 @@ def _evaluate_active_rebalance_or_none(
             candidates=[current_payload, candidate_payload],
             timeframe=str(config["ai_prompt_timeframe"]),
             candle_count=int(config["ai_prompt_candle_count"]),
-            reasoning_effort=str(config["deepseek_reasoning_effort"]),
-            model=str(config["deepseek_model"]),
-            max_tokens=int(config["deepseek_max_tokens"]),
-            timeout_seconds=float(config["deepseek_timeout_seconds"]),
+            reasoning_effort=str(config["zai_reasoning_effort"]),
+            model=str(config["zai_model"]),
+            max_tokens=int(config["zai_max_tokens"]),
+            timeout_seconds=float(config["zai_timeout_seconds"]),
             analysis_sink=analysis,
             decision_mode="active_rebalance",
         )
     except Exception as exc:
         logger.warning(
-            "Active rebalance DeepSeek selection failed | %s",
+            "Active rebalance ZAI selection failed | %s",
             format_log_details({"slot_id": slot.slot_id, "error": str(exc)}),
             exc_info=True,
         )
@@ -1921,12 +1817,10 @@ def _emit_active_screening_after(
             "current_price": reference_price,
             "trigger_reason": trigger_info.get("reason"),
             "trigger_price": trigger_info.get("trigger_price"),
-            "next_trigger_down": trigger_info.get("next_trigger_down"),
-            "next_trigger_up": trigger_info.get("next_trigger_up"),
             "decision": result.get("ai_decision") or result.get("screening_decision"),
             "screening_decision": result.get("screening_decision"),
             "screening_direction": result.get("screening_direction"),
-            "decision_source": result.get("decision_source") or "deepseek_trader",
+            "decision_source": result.get("decision_source") or "zai_trader",
             "action": result.get("action"),
             "success": bool(result.get("success")),
             "execution": result.get("execution"),
@@ -1986,8 +1880,6 @@ def _evaluate_slot_direction(
             "current_price": reference_price,
             "trigger_reason": trigger_info.get("reason"),
             "trigger_price": trigger_info.get("trigger_price"),
-            "next_trigger_down": trigger_info.get("next_trigger_down"),
-            "next_trigger_up": trigger_info.get("next_trigger_up"),
             "position": calculate_position_metrics(position) if isinstance(position, dict) else None,
             "decision_mode": decision_mode,
         },
@@ -1998,10 +1890,10 @@ def _evaluate_slot_direction(
         symbol=symbol,
         reference_price=reference_price,
         timeframe_ohlcv=market_context["timeframes"],
-        reasoning_effort=str(config["deepseek_reasoning_effort"]),
-        model=str(config["deepseek_model"]),
-        max_tokens=int(config["deepseek_max_tokens"]),
-        timeout_seconds=float(config["deepseek_timeout_seconds"]),
+        reasoning_effort=str(config["zai_reasoning_effort"]),
+        model=str(config["zai_model"]),
+        max_tokens=int(config["zai_max_tokens"]),
+        timeout_seconds=float(config["zai_timeout_seconds"]),
         analysis_sink=ai_analysis,
         decision_mode=decision_mode,
     )
@@ -2116,8 +2008,6 @@ def _slot_result_base(slot: PortfolioSlot, symbol: Optional[str]) -> Dict[str, A
         "decision_source": None,
         "trigger_reason": None,
         "trigger_price": None,
-        "next_trigger_down": None,
-        "next_trigger_up": None,
         "current_price": None,
         "position": None,
         "position_before": None,
@@ -2257,94 +2147,17 @@ def _run_active_slot(
 
         active_rank_due = _active_rank_review_due(tracked_state, config=config, as_of_ms=as_of_ms)
         if not active_mode_changed and not active_rank_due:
-            trigger_info = _determine_ai_trigger(
-                has_position=True,
+            trigger_info = _build_ai_trigger_info(
+                reason="holding_until_rebalance",
                 current_price=reference_price,
-                slot_state=tracked_state,
-                trigger_pct_usdt=float(config["trigger_pct_usdt"]),
+                should_trigger=False,
             )
             result.update(
                 {
                     "trigger_reason": trigger_info.get("reason"),
                     "trigger_price": trigger_info.get("trigger_price"),
-                    "next_trigger_down": trigger_info.get("next_trigger_down"),
-                    "next_trigger_up": trigger_info.get("next_trigger_up"),
                 }
             )
-
-            if bool(trigger_info.get("should_trigger")):
-                decision, ai_analysis, prompt_payload, ai_error = _evaluate_active_direction_or_none(
-                    slot=slot,
-                    symbol=current_symbol,
-                    reference_price=reference_price,
-                    config=config,
-                    as_of_ms=as_of_ms,
-                    cycle_dir_factory=cycle_dir_factory,
-                    notification_callback=notification_callback,
-                    position=position,
-                    trigger_info=trigger_info,
-                )
-                result["ai_triggered"] = True
-                result["ai_decision"] = decision
-                result["ai_analysis"] = ai_analysis
-                result.update(prompt_payload)
-                if isinstance(prompt_payload.get("ai_prompt_close_prices"), list):
-                    result["close_prices"] = list(prompt_payload["ai_prompt_close_prices"])
-                if ai_error:
-                    result["error"] = ai_error
-
-                if decision is None:
-                    stop_sync = _sync_fixed_stop_loss(
-                        api_key=api_key,
-                        api_secret=api_secret,
-                        symbol=current_symbol,
-                        position=position,
-                        stop_loss_pct=float(config["stop_loss_pct"]),
-                    )
-                    result["position"] = calculate_position_metrics(position)
-                    result["stop_sync"] = stop_sync
-                    result["success"] = bool(stop_sync.get("success"))
-                    result["action"] = (
-                        "active_price_review_failed_position_kept" if result["success"] else "stop_loss_sync_failed"
-                    )
-                    updated_state = dict(tracked_state)
-                    updated_state["symbol"] = current_symbol
-                    return result, updated_state, current_symbol
-
-                execution = _rebalance_existing_position(
-                    api_key=api_key,
-                    api_secret=api_secret,
-                    symbol=current_symbol,
-                    position=position,
-                    decision=decision,
-                    target_notional_usdt=target_notional,
-                    reference_price=reference_price,
-                    leverage=leverage,
-                    available_notional_cap=available_cap,
-                    rebalance_threshold_pct=float(config["rebalance_threshold_pct"]),
-                    stop_loss_pct=float(config["stop_loss_pct"]),
-                )
-                result["execution"] = execution
-                result["position"] = execution.get("position") or calculate_position_metrics(position)
-                result["stop_sync"] = execution.get("stop_sync")
-                result["success"] = bool(execution.get("success"))
-                result["action"] = str(execution.get("action") or "active_price_review_position_kept")
-                updated_state = _mark_active_screening_mode_current(
-                    slot,
-                    _update_slot_trigger_state(
-                        tracked_state,
-                        ai_triggered=True,
-                        trigger_info=trigger_info,
-                        ai_decision=decision,
-                        symbol=current_symbol,
-                        update_anchor=True,
-                    ),
-                )
-                updated_state["symbol"] = current_symbol
-                result["entered_at"] = updated_state.get("entered_at")
-                result["last_active_rank_checked_at"] = updated_state.get("last_active_rank_checked_at")
-                return result, updated_state, current_symbol
-
             stop_sync = _sync_fixed_stop_loss(
                 api_key=api_key,
                 api_secret=api_secret,
@@ -2358,28 +2171,22 @@ def _run_active_slot(
             result["action"] = "kept_active_position_until_stop_loss" if result["success"] else "stop_loss_sync_failed"
             updated_state = _mark_active_screening_mode_current(
                 slot,
-                _update_slot_trigger_state(
+                _update_slot_ai_state(
                     tracked_state,
                     ai_triggered=False,
-                    trigger_info=trigger_info,
                     symbol=current_symbol,
                 ),
             )
             return result, updated_state, current_symbol
 
-        trigger_info = {
-            "should_trigger": True,
-            "reason": "active_screening_mode_changed" if active_mode_changed else "active_rank_review_due",
-            "trigger_price": _normalize_trigger_price(reference_price),
-            "next_trigger_down": None,
-            "next_trigger_up": None,
-        }
+        trigger_info = _build_ai_trigger_info(
+            reason="active_screening_mode_changed" if active_mode_changed else "active_rank_review_due",
+            current_price=reference_price,
+        )
         result.update(
             {
                 "trigger_reason": trigger_info.get("reason"),
                 "trigger_price": trigger_info.get("trigger_price"),
-                "next_trigger_down": trigger_info.get("next_trigger_down"),
-                "next_trigger_up": trigger_info.get("next_trigger_up"),
             }
         )
         try:
@@ -2501,7 +2308,7 @@ def _run_active_slot(
                     config=config,
                 )
                 result["ai_triggered"] = True
-                result["decision_source"] = "deepseek_rebalancer"
+                result["decision_source"] = "zai_rebalancer"
                 result["active_rebalance_direction_basis"] = {
                     "current": {
                         "symbol": current_symbol,
@@ -2733,13 +2540,11 @@ def _run_active_slot(
             updated_state = _mark_active_screening_mode_current(
                 slot,
                 _mark_active_rank_checked(
-                    _update_slot_trigger_state(
+                    _update_slot_ai_state(
                         tracked_state,
                         ai_triggered=True,
-                        trigger_info=trigger_info,
                         ai_decision=decision,
                         symbol=current_symbol,
-                        update_anchor=True,
                     ),
                     as_of_ms=as_of_ms,
                 ),
@@ -2827,17 +2632,15 @@ def _run_active_slot(
             result["action"] = (
                 "switched_active_position_by_rebalancer"
                 if selected_rebalance_symbol == candidate_symbol
-                else "switched_active_position_by_deepseek"
+                else "switched_active_position_by_zai"
             )
             updated_state = _mark_active_screening_mode_current(
                 slot,
-                _update_slot_trigger_state(
+                _update_slot_ai_state(
                     _mark_active_entry_opened(_clear_active_slot_state(tracked_state), as_of_ms=as_of_ms),
                     ai_triggered=True,
-                    trigger_info=trigger_info,
                     ai_decision=decision,
                     symbol=candidate_symbol,
-                    update_anchor=True,
                 ),
             )
             reserved_symbol = candidate_symbol
@@ -2897,21 +2700,13 @@ def _run_active_slot(
         result["action"] = "candidate_reference_price_unavailable"
         return result, slot_state, candidate_symbol
     result["current_price"] = reference_price
-    trigger_info = _determine_ai_trigger(
-        has_position=False,
-        current_price=reference_price,
-        slot_state=_clear_active_slot_state(slot_state),
-        trigger_pct_usdt=float(config["trigger_pct_usdt"]),
-    )
+    trigger_info = _build_ai_trigger_info(reason="active_candidate_selected", current_price=reference_price)
     result.update(
         {
-            "trigger_reason": "active_candidate_selected",
+            "trigger_reason": trigger_info.get("reason"),
             "trigger_price": trigger_info.get("trigger_price"),
-            "next_trigger_down": trigger_info.get("next_trigger_down"),
-            "next_trigger_up": trigger_info.get("next_trigger_up"),
         }
     )
-    trigger_info["reason"] = "active_candidate_selected"
     slot_dir = _slot_artifact_dir(cycle_dir_factory(), slot.slot_id)
     if isinstance(screener_output, dict):
         _persist_screener_output(slot_dir, screener_output)
@@ -2986,13 +2781,11 @@ def _run_active_slot(
         base_active_state = _mark_active_entry_opened(base_active_state, as_of_ms=as_of_ms)
     updated_state = _mark_active_screening_mode_current(
         slot,
-        _update_slot_trigger_state(
+        _update_slot_ai_state(
             base_active_state,
             ai_triggered=True,
-            trigger_info=trigger_info,
             ai_decision=decision,
             symbol=candidate_symbol if opened_active_position else None,
-            update_anchor=True,
         ),
     )
     result["entered_at"] = updated_state.get("entered_at")
@@ -3034,13 +2827,12 @@ def run_portfolio_cycle(
         "config_summary": {
             "active_leverage": config["active_leverage"],
             "capital_usage_ratio": config["capital_usage_ratio"],
-            "trigger_pct_usdt": config["trigger_pct_usdt"],
             "stop_loss_pct": config["stop_loss_pct"],
             "active_rescreen_interval_hours": config["active_rescreen_interval_hours"],
             "ai_prompt_timeframe": config["ai_prompt_timeframe"],
             "ai_prompt_candle_count": config["ai_prompt_candle_count"],
-            "deepseek_model": config["deepseek_model"],
-            "deepseek_reasoning_effort": config["deepseek_reasoning_effort"],
+            "zai_model": config["zai_model"],
+            "zai_reasoning_effort": config["zai_reasoning_effort"],
         },
     }
 
@@ -3177,8 +2969,6 @@ def run_portfolio_cycle(
             "ai_decision",
             "trigger_reason",
             "trigger_price",
-            "next_trigger_down",
-            "next_trigger_up",
             "position",
             "screening_decision",
             "screening_direction",
@@ -3209,7 +2999,7 @@ __all__ = [
     "STATE_VERSION",
     "_build_entry_order_plan",
     "_build_portfolio_slots",
-    "_determine_ai_trigger",
+    "_build_ai_trigger_info",
     "_load_strategy_config",
     "_resolve_fixed_stop_loss_price",
     "_target_notional_usdt",

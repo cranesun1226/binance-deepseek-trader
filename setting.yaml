@@ -1,32 +1,27 @@
-# Binance DeepSeek Trader runtime config
+# Binance ZAI Trader runtime config
 
 # Trading loop
 cycle_interval_seconds: 60
-
-# Active slots use this price trigger for current-symbol DeepSeek direction
-# reviews while open. Universe re-screening still follows
-# active_rescreen_interval_hours.
-trigger_pct_usdt: 1.0
 
 # Prompt input: 168 recent 1h close prices, with the newest value aligned
 # to the live reference price.
 ai_prompt_timeframe: 1h
 ai_prompt_candle_count: 168
 
-# DeepSeek V4 Flash via https://api.deepseek.com/chat/completions
-deepseek_model: deepseek-v4-flash
-deepseek_reasoning_effort: max
-deepseek_max_tokens: 8192
-deepseek_timeout_seconds: 300.0
+# ZAI GLM-5.2 with thinking enabled and max reasoning effort.
+zai_model: glm-5.2
+zai_reasoning_effort: max
+zai_max_tokens: 8192
+zai_timeout_seconds: 300.0
 
 # Portfolio allocation
 # Four active slots each target 1/4 margin allocation. Active 1/2/3 screen
 # TradFi USDT-M perpetuals; active 4 screens the full USDT-M perpetual
 # universe, including TradFi and non-TradFi crypto symbols.
-active_leverage: 2
+active_leverage: 1
 capital_usage_ratio: 0.99
 rebalance_threshold_pct: 0.02
-stop_loss_pct: 0.04
+stop_loss_pct: 0.05
 active_rescreen_interval_hours: 24
 
 # Active candidates are ranked by one-week trend quality over
@@ -39,10 +34,10 @@ active_rescreen_interval_hours: 24
 #
 # Before ranking, the screener applies a directional 24-candle entry filter
 # against the live lookup price:
-# - LONG: min(low over latest 24 1h klines) >= live_price * 0.96
-# - SHORT: max(high over latest 24 1h klines) <= live_price * 1.04
+# - LONG: min(low over latest 24 1h klines) >= live_price * 0.95
+# - SHORT: max(high over latest 24 1h klines) <= live_price * 1.05
 #
-# Once an active position is open, it is held until the fixed 4% stop loss,
+# Once an active position is open, it is held until the fixed 5% stop loss,
 # external/manual position cleanup, or the 24h review re-ranks candidates
 # while allowing the current symbol.
 

@@ -65,7 +65,7 @@ class SchedulerTests(unittest.TestCase):
 
         self.assertIn("Decision Reason", message)
         self.assertIn("The full close series holds higher lows", message)
-        self.assertNotIn("DeepSeek Reasoning", message)
+        self.assertNotIn("ZAI Reasoning", message)
         self.assertNotIn("raw internal reasoning", message)
 
     def test_close_price_chart_uses_prompt_candle_count(self):
@@ -102,11 +102,11 @@ class SchedulerTests(unittest.TestCase):
             "screening_decision": "LONG",
             "decision": "LONG",
             "ai_decision": "LONG",
-            "decision_source": "deepseek_trader",
+            "decision_source": "zai_trader",
             "ai_analysis": {
                 "decision": {
                     "decision": "LONG",
-                    "reason": "DeepSeek confirms the active setup.",
+                    "reason": "ZAI confirms the active setup.",
                 }
             },
             "action": "opened_new_position",

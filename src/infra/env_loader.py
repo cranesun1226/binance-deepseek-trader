@@ -43,12 +43,20 @@ def load_env_var(key: str, default: Optional[str] = None) -> Optional[str]:
     return default
 
 
-def get_deepseek_api_key() -> str:
-    """Return the configured DeepSeek API key."""
-    api_key = load_env_var("DEEPSEEK_API_KEY")
+def get_zai_api_key() -> str:
+    """Return the configured ZAI API key."""
+    api_key = load_env_var("ZAI_API_KEY")
     if not api_key:
-        raise ValueError("DEEPSEEK_API_KEY not found in .env file or environment")
+        raise ValueError("ZAI_API_KEY not found in .env file or environment")
     return api_key
+
+
+def get_zai_api_id() -> str:
+    """Return the configured ZAI API ID."""
+    api_id = load_env_var("ZAI_API_ID")
+    if not api_id:
+        raise ValueError("ZAI_API_ID not found in .env file or environment")
+    return api_id
 
 
 def get_binance_credentials() -> tuple[str, str]:

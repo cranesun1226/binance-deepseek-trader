@@ -1,4 +1,4 @@
-"""CLI entrypoint for Binance DeepSeek Trader."""
+"""CLI entrypoint for Binance ZAI Trader."""
 
 import argparse
 from typing import Any, Dict, Optional
@@ -18,8 +18,6 @@ ONCE_RESULT_FIELDS = (
     "current_price",
     "ai_triggered",
     "ai_decision",
-    "next_trigger_down",
-    "next_trigger_up",
 )
 
 
@@ -28,7 +26,7 @@ def run_portfolio_strategy_cycle(
     state: Optional[Dict[str, Any]] = None,
     as_of_ms: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Expose a single Binance DeepSeek Trader cycle for external callers and tests."""
+    """Expose a single Binance ZAI Trader cycle for external callers and tests."""
     return run_portfolio_cycle(state=state, as_of_ms=as_of_ms)
 
 
@@ -44,7 +42,7 @@ def _print_once_summary(result: Dict[str, Any]) -> None:
 def main_once() -> None:
     """Run one trading cycle and print a concise CLI summary."""
     logger.info("=" * 60)
-    logger.info("=== Binance DeepSeek Trader (once mode) ===")
+    logger.info("=== Binance ZAI Trader (once mode) ===")
     logger.info("=" * 60)
 
     scheduler = TradingScheduler()
@@ -55,7 +53,7 @@ def main_once() -> None:
 def main_scheduled() -> None:
     """Start the long-running scheduler loop."""
     logger.info("=" * 60)
-    logger.info("=== Binance DeepSeek Trader (scheduled mode) ===")
+    logger.info("=== Binance ZAI Trader (scheduled mode) ===")
     logger.info("=" * 60)
 
     scheduler = TradingScheduler()
@@ -64,7 +62,7 @@ def main_scheduled() -> None:
 
 def main() -> None:
     """Parse CLI arguments and dispatch the requested runtime mode."""
-    parser = argparse.ArgumentParser(description="Binance DeepSeek Trader | six-slot USDT-M futures bot")
+    parser = argparse.ArgumentParser(description="Binance ZAI Trader | four-slot USDT-M futures bot")
     parser.add_argument(
         "--once",
         action="store_true",

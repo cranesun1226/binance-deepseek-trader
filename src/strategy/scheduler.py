@@ -1,4 +1,4 @@
-"""Scheduling and notification orchestration for Binance DeepSeek Trader."""
+"""Scheduling and notification orchestration for Binance ZAI Trader."""
 
 from __future__ import annotations
 
@@ -35,11 +35,9 @@ MARKUP_TAG_PATTERN = re.compile(
 
 TRIGGER_REASON_LABELS = {
     "no_position": "No open position",
-    "missing_llm_anchor": "Missing LLM anchor",
-    "price_distance_reached": "Price distance reached",
-    "waiting_for_next_price_trigger": "Waiting for next price level",
+    "holding_until_rebalance": "Holding until next 24h review",
     "active_candidate_selected": "Active candidate selected",
-    "active_rank_review_due": "Active 24h DeepSeek review due",
+    "active_rank_review_due": "Active 24h ZAI review due",
     "active_screening_mode_changed": "Active screening mode changed",
 }
 
@@ -50,17 +48,15 @@ ACTION_LABELS = {
     "kept_position_by_ai": "Position kept by AI",
     "kept_position_by_screening": "Position kept by screening",
     "kept_active_position_until_stop_loss": "Active position held until stop-loss",
-    "active_price_review_failed_position_kept": "Active 1% DeepSeek review failed, position kept",
-    "active_price_review_position_kept": "Active position kept after 1% DeepSeek review",
     "active_rebalance_review_failed_position_kept": "Active rebalance review failed, position kept",
     "active_rebalance_position_kept": "Active position kept after rebalance review",
     "active_rebalance_selection_failed_position_kept": "Active rebalance selection failed, position kept",
-    "active_rank_review_failed_position_kept": "Active DeepSeek review failed, position kept",
-    "active_rank_review_position_kept": "Active position kept after DeepSeek review",
-    "active_ai_decision_failed": "Active DeepSeek direction failed",
+    "active_rank_review_failed_position_kept": "Active ZAI review failed, position kept",
+    "active_rank_review_position_kept": "Active position kept after ZAI review",
+    "active_ai_decision_failed": "Active ZAI direction failed",
     "opened_new_position": "Opened new position",
-    "switched_active_position_by_deepseek": "Switched active position by DeepSeek direction",
-    "switched_active_position_by_rebalancer": "Switched active position by DeepSeek rebalance selection",
+    "switched_active_position_by_zai": "Switched active position by ZAI direction",
+    "switched_active_position_by_rebalancer": "Switched active position by ZAI rebalance selection",
     "reversed_position": "Reversed position",
     "increased_position": "Increased position",
     "reduced_position": "Reduced position",
@@ -68,12 +64,12 @@ ACTION_LABELS = {
     "screener_selection_failed": "Active screener failed",
     "ai_decision_failed": "AI decision failed",
     "slot_execution_failed": "Slot execution failed",
-    "switch_close_failed": "Active DeepSeek switch close failed",
+    "switch_close_failed": "Active ZAI switch close failed",
     "entry_order_failed": "Entry order failed",
     "stop_loss_sync_failed": "Stop-loss sync failed",
     "post_trade_stop_loss_sync_failed_closed": "Stop-loss sync failed, position closed",
     "post_trade_stop_loss_sync_failed_close_failed": "Stop-loss sync failed, close failed",
-    "active_rank_switch_entry_failed": "Active DeepSeek switch entry failed",
+    "active_rank_switch_entry_failed": "Active ZAI switch entry failed",
     "reference_price_unavailable": "Reference price unavailable",
 }
 
@@ -111,7 +107,7 @@ class TradingScheduler:
         self.state_file_path = os.path.abspath(STATE_FILE)
         self.state = self.load_state()
         logger.info("Scheduler state file path: %s", self.state_file_path)
-        logger.info("TradingScheduler initialized in Binance DeepSeek Trader mode")
+        logger.info("TradingScheduler initialized in Binance ZAI Trader mode")
 
     def _default_state(self) -> Dict[str, Any]:
         return {
@@ -334,7 +330,7 @@ class TradingScheduler:
 
     def _build_ai_cycle_before_message(self, payload: Dict[str, Any]) -> str:
         return self._build_message(
-            title=self._format_html_title("Binance DeepSeek Trader | AI Cycle Start"),
+            title=self._format_html_title("Binance ZAI Trader | AI Cycle Start"),
             summary_lines=[
                 self._format_html_line("Symbol", payload.get("symbol"), code=True),
                 self._format_html_line("Price", self._format_usdt(payload.get("current_price"))),
@@ -483,7 +479,7 @@ class TradingScheduler:
                 )
             )
         return self._build_message(
-            title=self._format_html_title("Binance DeepSeek Trader | Cycle Update"),
+            title=self._format_html_title("Binance ZAI Trader | Cycle Update"),
             summary_lines=[
                 self._format_html_line("Action", self._translate_action(payload.get("action"))),
                 self._format_html_line("AI Triggered", str(bool(payload.get("ai_triggered")))),
@@ -494,7 +490,7 @@ class TradingScheduler:
 
     def _build_exception_message(self, payload: Dict[str, Any]) -> str:
         return self._build_message(
-            title=self._format_html_title("Binance DeepSeek Trader | Scheduler Error"),
+            title=self._format_html_title("Binance ZAI Trader | Scheduler Error"),
             summary_lines=[
                 self._format_html_line("Time", self._format_timestamp(payload.get("timestamp"))),
                 self._format_html_line("Error", self._clip_text(payload.get("error"), limit=600)),
@@ -743,7 +739,7 @@ class TradingScheduler:
         self.is_running = True
         interval_seconds = self._get_cycle_interval_seconds()
         logger.info("=" * 60)
-        logger.info("=== Binance DeepSeek Trader Scheduler Started ===")
+        logger.info("=== Binance ZAI Trader Scheduler Started ===")
         logger.info("=" * 60)
         logger.info("Cycle interval: %s seconds", interval_seconds)
         logger.info("Scheduled second offset: %s seconds", SCHEDULE_SECOND_OFFSET)

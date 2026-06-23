@@ -116,35 +116,35 @@ class ActiveScreenerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "positive"):
             extract_kline_close_prices(_klines_from_closes([1.0, 0.0]), required_count=2)
 
-    def test_directional_entry_filter_allows_long_when_24h_min_low_is_inside_four_percent(self):
-        klines = [_kline(index, close=100.0, high=101.0, low=96.0) for index in range(ENTRY_EXTREME_LOOKBACK)]
+    def test_directional_entry_filter_allows_long_when_24h_min_low_is_inside_five_percent(self):
+        klines = [_kline(index, close=100.0, high=101.0, low=95.0) for index in range(ENTRY_EXTREME_LOOKBACK)]
 
         result = validate_directional_entry_filter(klines, decision="LONG", reference_price=100.0)
 
         self.assertTrue(result["entry_filter_passed"])
-        self.assertEqual(result["recent_kline_min_low"], 96.0)
-        self.assertEqual(result["entry_filter_long_min_low_threshold"], 96.0)
+        self.assertEqual(result["recent_kline_min_low"], 95.0)
+        self.assertEqual(result["entry_filter_long_min_low_threshold"], 95.0)
         self.assertEqual(result["entry_filter_distance_limit"], ENTRY_EXTREME_DISTANCE_LIMIT)
 
-    def test_directional_entry_filter_rejects_long_when_24h_min_low_breaks_four_percent(self):
-        klines = [_kline(index, close=100.0, high=101.0, low=96.0) for index in range(ENTRY_EXTREME_LOOKBACK)]
-        klines[-1][3] = "95.99"
+    def test_directional_entry_filter_rejects_long_when_24h_min_low_breaks_five_percent(self):
+        klines = [_kline(index, close=100.0, high=101.0, low=95.0) for index in range(ENTRY_EXTREME_LOOKBACK)]
+        klines[-1][3] = "94.99"
 
         with self.assertRaisesRegex(ValueError, "long entry filter failed"):
             validate_directional_entry_filter(klines, decision="LONG", reference_price=100.0)
 
-    def test_directional_entry_filter_allows_short_when_24h_max_high_is_inside_four_percent(self):
-        klines = [_kline(index, close=100.0, high=104.0, low=99.0) for index in range(ENTRY_EXTREME_LOOKBACK)]
+    def test_directional_entry_filter_allows_short_when_24h_max_high_is_inside_five_percent(self):
+        klines = [_kline(index, close=100.0, high=105.0, low=99.0) for index in range(ENTRY_EXTREME_LOOKBACK)]
 
         result = validate_directional_entry_filter(klines, decision="SHORT", reference_price=100.0)
 
         self.assertTrue(result["entry_filter_passed"])
-        self.assertEqual(result["recent_kline_max_high"], 104.0)
-        self.assertEqual(result["entry_filter_short_max_high_threshold"], 104.0)
+        self.assertEqual(result["recent_kline_max_high"], 105.0)
+        self.assertEqual(result["entry_filter_short_max_high_threshold"], 105.0)
 
-    def test_directional_entry_filter_rejects_short_when_24h_max_high_breaks_four_percent(self):
-        klines = [_kline(index, close=100.0, high=104.0, low=99.0) for index in range(ENTRY_EXTREME_LOOKBACK)]
-        klines[-1][2] = "104.01"
+    def test_directional_entry_filter_rejects_short_when_24h_max_high_breaks_five_percent(self):
+        klines = [_kline(index, close=100.0, high=105.0, low=99.0) for index in range(ENTRY_EXTREME_LOOKBACK)]
+        klines[-1][2] = "105.01"
 
         with self.assertRaisesRegex(ValueError, "short entry filter failed"):
             validate_directional_entry_filter(klines, decision="SHORT", reference_price=100.0)
