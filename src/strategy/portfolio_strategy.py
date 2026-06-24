@@ -1509,6 +1509,13 @@ def _screen_active_candidate(
     candidate_symbol = _normalize_symbol((selection or {}).get("symbol"))
     if not candidate_symbol:
         raise NoActiveCandidateError("active screener did not return a tradable candidate")
+    excluded = {
+        symbol
+        for symbol in (_normalize_symbol(value) for value in excluded_symbols)
+        if symbol
+    }
+    if candidate_symbol in excluded:
+        raise NoActiveCandidateError(f"active screener returned excluded candidate {candidate_symbol}")
     selected = selection.get("selected") if isinstance(selection, dict) else {}
     if not isinstance(selected, dict):
         selected = {}
