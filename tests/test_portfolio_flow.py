@@ -5,6 +5,8 @@ from unittest.mock import patch
 
 from src.strategy import portfolio_strategy
 
+TEST_ACTIVE_RESCREEN_INTERVAL_HOURS = 18
+
 
 def _config():
     return {
@@ -13,7 +15,7 @@ def _config():
         "stop_loss_pct": 0.05,
         "capital_usage_ratio": 0.99,
         "rebalance_threshold_pct": 0.02,
-        "active_rescreen_interval_hours": 24,
+        "active_rescreen_interval_hours": TEST_ACTIVE_RESCREEN_INTERVAL_HOURS,
         "ai_prompt_timeframe": "1h",
         "ai_prompt_candle_count": 168,
         "zai_model": "glm-5.2",
@@ -492,7 +494,7 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertEqual(result["slot_results"][0]["error"], "boom")
         self.assertEqual(result["slot_results"][1]["action"], "waiting_for_active_candidate")
 
-    def test_active_existing_position_between_24h_reviews_only_syncs_stop_loss(self):
+    def test_active_existing_position_between_18h_reviews_only_syncs_stop_loss(self):
         slot = _active_slot()
         slot_state = {
             "slot_id": "active_1",
@@ -908,7 +910,7 @@ class PortfolioFlowTests(unittest.TestCase):
                 account_overview={"equity": 1000.0, "available_balance": 500.0},
                 open_positions=[_long_position()],
                 reserved_symbols=set(),
-                as_of_ms=(24 * 60 * 60 * 1000) + 1000,
+                as_of_ms=(TEST_ACTIVE_RESCREEN_INTERVAL_HOURS * 60 * 60 * 1000) + 1000,
                 cycle_dir_factory=lambda: temp_dir,
                 notification_callback=lambda event_name, payload: notifications.append((event_name, payload)),
             )
@@ -922,7 +924,7 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertEqual(active_symbol, "ESUSDT")
         self.assertEqual(updated_state["symbol"], "ESUSDT")
         self.assertEqual(updated_state["last_ai_decision"], "LONG")
-        self.assertEqual(updated_state["last_active_rank_checked_at"], "1970-01-02T00:00:01Z")
+        self.assertEqual(updated_state["last_active_rank_checked_at"], "1970-01-01T18:00:01Z")
         mocked_screen.assert_called_once()
         self.assertNotIn("ESUSDT", mocked_screen.call_args.kwargs["excluded_symbols"])
         mocked_ai.assert_called_once()
@@ -1007,7 +1009,7 @@ class PortfolioFlowTests(unittest.TestCase):
                 account_overview={"equity": 1000.0, "available_balance": 500.0},
                 open_positions=[_long_position()],
                 reserved_symbols=set(),
-                as_of_ms=(24 * 60 * 60 * 1000) + 1000,
+                as_of_ms=(TEST_ACTIVE_RESCREEN_INTERVAL_HOURS * 60 * 60 * 1000) + 1000,
                 cycle_dir_factory=lambda: temp_dir,
                 notification_callback=None,
             )

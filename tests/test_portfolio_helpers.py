@@ -46,6 +46,12 @@ class PortfolioHelperTests(unittest.TestCase):
 
         self.assertEqual(portfolio_strategy._leverage_for_slot(active, {}), 1)
 
+    def test_active_rescreen_interval_defaults_to_18_hours(self):
+        self.assertEqual(
+            portfolio_strategy._active_rescreen_interval_ms({}),
+            18 * 60 * 60 * 1000,
+        )
+
     def test_ensure_symbol_leverage_fails_closed_on_mismatch(self):
         with patch("src.strategy.portfolio_strategy.set_leverage", return_value=1):
             result = portfolio_strategy._ensure_symbol_leverage(

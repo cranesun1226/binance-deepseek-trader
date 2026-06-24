@@ -9,7 +9,7 @@ Binance USDT-M futures portfolio runner powered by a trend-quality active screen
 - Active 4 screens the full USDT-M perpetual universe, including TradFi and non-TradFi crypto symbols.
 - This keeps three dedicated TradFi slots while allowing the fourth slot to select the strongest overall USDT setup.
 - All active slots use 1x leverage by default and a fixed 5% stop loss from entry.
-- ZAI is called only when an active slot has no open position or when the configured active re-screen interval is due, default 24 hours.
+- ZAI is called only when an active slot has no open position or when the configured active re-screen interval is due, default 18 hours.
 
 ## Active Screener
 
@@ -47,9 +47,9 @@ When a slot has an open position, it is held until one of these happens:
 
 - the fixed exchange stop loss is hit
 - the position is manually or externally removed
-- the 24h active review is due
+- the 18h active review is due
 
-Between 24h reviews, the runtime only checks exchange state and synchronizes the fixed 5% stop loss. During the 24h review, the screener re-ranks the slot's own universe while allowing the current symbol. If the current symbol remains top-ranked, ZAI trader reviews direction again. If a different candidate is top-ranked, ZAI rebalancer directly compares the current position direction against the screened candidate direction and chooses one symbol. The current position is closed only when the new candidate is selected.
+Between 18h reviews, the runtime only checks exchange state and synchronizes the fixed 5% stop loss. During the 18h review, the screener re-ranks the slot's own universe while allowing the current symbol. If the current symbol remains top-ranked, ZAI trader reviews direction again. If a different candidate is top-ranked, ZAI rebalancer directly compares the current position direction against the screened candidate direction and chooses one symbol. The current position is closed only when the new candidate is selected.
 
 ## Configuration
 
@@ -70,7 +70,7 @@ active_leverage: 1
 capital_usage_ratio: 0.99
 rebalance_threshold_pct: 0.02
 stop_loss_pct: 0.05
-active_rescreen_interval_hours: 24
+active_rescreen_interval_hours: 18
 
 screener_quote: USDT
 screener_timeout: 30.0

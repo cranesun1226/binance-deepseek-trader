@@ -22,7 +22,7 @@ active_leverage: 1
 capital_usage_ratio: 0.99
 rebalance_threshold_pct: 0.02
 stop_loss_pct: 0.05
-active_rescreen_interval_hours: 24
+active_rescreen_interval_hours: 18
 
 # Active candidates are ranked by one-week trend quality over
 # ai_prompt_candle_count closes on ai_prompt_timeframe. The trend screener
@@ -38,7 +38,7 @@ active_rescreen_interval_hours: 24
 # - SHORT: max(high over latest 24 1h klines) <= live_price * 1.05
 #
 # Once an active position is open, it is held until the fixed 5% stop loss,
-# external/manual position cleanup, or the 24h review re-ranks candidates
+# external/manual position cleanup, or the 18h review re-ranks candidates
 # while allowing the current symbol.
 
 # Binance public API stability knobs for active screening.

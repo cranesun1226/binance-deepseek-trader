@@ -35,9 +35,9 @@ MARKUP_TAG_PATTERN = re.compile(
 
 TRIGGER_REASON_LABELS = {
     "no_position": "No open position",
-    "holding_until_rebalance": "Holding until next 24h review",
+    "holding_until_rebalance": "Holding until next 18h review",
     "active_candidate_selected": "Active candidate selected",
-    "active_rank_review_due": "Active 24h ZAI review due",
+    "active_rank_review_due": "Active 18h ZAI review due",
     "active_screening_mode_changed": "Active screening mode changed",
 }
 
