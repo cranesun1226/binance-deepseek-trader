@@ -18,8 +18,14 @@ class ZAIRebalancerTests(unittest.TestCase):
     def test_rebalance_payload_uses_equal_priority_candidate_shape(self):
         payload = zai_rebalancer._build_rebalance_input_payload(
             candidates=[
-                _candidate("NQUSDT", "SHORT", 200.0),
-                _candidate("ESUSDT", "LONG", 100.0),
+                {
+                    **_candidate("NQUSDT", "SHORT", 200.0),
+                    "metrics": {"r_squared": 0.99, "trend_score": 1.0},
+                },
+                {
+                    **_candidate("ESUSDT", "LONG", 100.0),
+                    "metrics": {"r_squared": 0.98, "trend_score": 0.9},
+                },
             ],
             timeframe="1h",
             candle_count=3,
@@ -30,20 +36,28 @@ class ZAIRebalancerTests(unittest.TestCase):
             ["ESUSDT", "NQUSDT"],
         )
         for candidate in payload["candidates"]:
-            self.assertEqual(set(candidate.keys()), {"symbol", "decision", "reference_price", "timeframes"})
+            self.assertEqual(set(candidate.keys()), {"symbol", "reference_price", "timeframes"})
             self.assertNotIn("current", candidate)
             self.assertNotIn("existing", candidate)
             self.assertNotIn("replacement", candidate)
+            self.assertNotIn("metrics", candidate)
+            self.assertNotIn("decision", candidate)
 
         prompt = zai_rebalancer._format_rebalance_prompt(payload)
         lowered_prompt = prompt.lower()
         self.assertEqual(zai_rebalancer.REBALANCE_REASON_MAX_CHARS, 300)
         self.assertIn("300 characters or fewer", prompt)
         self.assertIn("compare both candidates directly", lowered_prompt)
-        self.assertIn("selected setup is more rational", lowered_prompt)
+        self.assertIn("selected symbol is more rational", lowered_prompt)
         self.assertNotIn("current", lowered_prompt)
         self.assertNotIn("existing", lowered_prompt)
         self.assertNotIn("replacement", lowered_prompt)
+        self.assertNotIn("metrics", lowered_prompt)
+        self.assertNotIn("r_squared", lowered_prompt)
+        self.assertNotIn("trend_score", lowered_prompt)
+        self.assertNotIn("decision", lowered_prompt)
+        self.assertNotIn("fixed-direction", lowered_prompt)
+        self.assertNotIn("long/short", lowered_prompt)
 
     def test_structured_rebalance_call_parses_candidate_symbol_selection(self):
         response_payload = {

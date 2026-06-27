@@ -46,7 +46,6 @@ from src.ai.zai_trader import (
     _normalize_reasoning_details,
     _normalize_reasoning_effort,
     _normalize_timeout_seconds,
-    _to_jsonable,
     estimate_zai_cost,
 )
 from src.infra.env_loader import get_zai_api_key
@@ -58,11 +57,10 @@ REBALANCE_REASON_MAX_CHARS = DECISION_REASON_MAX_CHARS
 
 _SYSTEM_PROMPT = (
     "You are a USDT perpetual futures trend-following momentum portfolio selector. "
-    "Two fixed-direction candidates have equal priority. "
+    "Two symbol candidates have equal priority. "
     "Ignore order, symbol familiarity, and wording as selection signals. "
-    "Each LONG or SHORT direction is fixed; do not change it. "
-    "Select the fixed-direction setup with stronger data-backed momentum consensus and higher expected value. "
-    "In the reason, compare both candidates directly and explain why the selected setup is more rational. "
+    "Select the symbol with stronger data-backed trend-following momentum consensus and higher expected value. "
+    "In the reason, compare both candidates directly and explain why the selected symbol is more rational. "
     "Use only English. "
     "Return exactly one JSON object containing only selected_symbol and reason. "
     f"Keep reason data-based and {REBALANCE_REASON_MAX_CHARS} characters or fewer."
@@ -121,13 +119,9 @@ def _normalize_candidate_payload(candidate: Dict[str, Any]) -> Dict[str, Any]:
     symbol = _normalize_symbol(candidate.get("symbol"))
     if not symbol:
         raise ValueError("candidate symbol is required")
-    decision = str(candidate.get("decision") or "").strip().upper()
-    if decision not in {"LONG", "SHORT"}:
-        raise ValueError(f"candidate decision for {symbol} must be LONG or SHORT")
 
     normalized = {
         "symbol": symbol,
-        "decision": decision,
         "reference_price": _normalize_positive_price(
             candidate.get("reference_price"),
             field_name=f"{symbol}.reference_price",
@@ -135,11 +129,6 @@ def _normalize_candidate_payload(candidate: Dict[str, Any]) -> Dict[str, Any]:
         "timeframes": _normalize_timeframes(candidate.get("timeframes")),
     }
 
-    metrics = candidate.get("metrics")
-    if isinstance(metrics, dict):
-        normalized_metrics = _to_jsonable(metrics)
-        if isinstance(normalized_metrics, dict):
-            normalized["metrics"] = normalized_metrics
     return normalized
 
 
@@ -166,10 +155,10 @@ def _build_rebalance_input_payload(
 
     normalized_candidates.sort(key=lambda row: row["symbol"])
     return {
-        "task": "select_one_symbol_from_equal_priority_fixed_direction_momentum_candidates",
+        "task": "select_one_symbol_from_equal_priority_momentum_candidates",
         "selection_basis": (
-            "Choose the candidate whose provided fixed-direction trade has stronger trend-following momentum "
-            f"agreement from the same {normalized_count}-close market evidence."
+            "Choose the candidate with stronger trend-following momentum agreement "
+            f"from the same {normalized_count}-close market evidence."
         ),
         "ai_prompt_timeframe": normalized_timeframe,
         "ai_prompt_candle_count": normalized_count,
@@ -182,9 +171,8 @@ def _format_rebalance_prompt(payload: Dict[str, Any]) -> str:
     return (
         "Return JSON only with exactly two fields: selected_symbol and reason.\n"
         "Choose one allowed symbol; candidates are equal priority, so ignore order, familiarity, and wording.\n"
-        "Keep each candidate's LONG/SHORT direction fixed.\n"
-        "Select the fixed-direction setup with stronger trend-following momentum evidence and expected value.\n"
-        f"Reason: English, data-based, compare both candidates directly, explain why the selected setup is more rational, {REBALANCE_REASON_MAX_CHARS} characters or fewer.\n"
+        "Select the symbol with stronger trend-following momentum evidence and expected value.\n"
+        f"Reason: English, data-based, compare both candidates directly, explain why the selected symbol is more rational, {REBALANCE_REASON_MAX_CHARS} characters or fewer.\n"
         f"Allowed selected_symbol values: {json.dumps(symbols, ensure_ascii=False, separators=(',', ':'))}.\n"
         "Example: {\"selected_symbol\":\"SYMBOLUSDT\",\"reason\":\"...\"}.\n"
         f"Market payload:\n{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"
@@ -401,7 +389,7 @@ def evaluate_active_rebalance_symbol(
     analysis_sink: Optional[Dict[str, Any]] = None,
     decision_mode: str = "active_rebalance",
 ) -> Optional[ActiveRebalanceSelection]:
-    """Request one symbol selection from two fixed-direction active candidates."""
+    """Request one symbol selection from two active candidates."""
     try:
         prompt_payload = _build_rebalance_input_payload(
             candidates=candidates,
