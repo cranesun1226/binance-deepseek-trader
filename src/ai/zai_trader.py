@@ -95,6 +95,37 @@ class ZAIEmptyContentError(ValueError):
     """Raised when ZAI returns a response without final JSON content."""
 
 
+class ZAIAuthenticationError(RuntimeError):
+    """Raised when ZAI rejects credentials and further immediate retries are unsafe."""
+
+
+def is_zai_authentication_error(value: Any) -> bool:
+    status_code = getattr(value, "status_code", None)
+    if status_code is None:
+        response = getattr(value, "response", None)
+        status_code = getattr(response, "status_code", None)
+    try:
+        if int(status_code) in {401, 403}:
+            return True
+    except (TypeError, ValueError):
+        pass
+
+    text = str(value or "").lower()
+    return any(
+        pattern in text
+        for pattern in (
+            "error code: 401",
+            "error code: 403",
+            "authentication failed",
+            "invalid api key",
+            "invalid public key",
+            '"code":"1000"',
+            '"code":"1004"',
+            "unauthorized",
+        )
+    )
+
+
 def _to_jsonable(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
@@ -512,6 +543,10 @@ def _call_zai_structured_decision(
             )
         except Exception as exc:
             last_error = exc
+            if is_zai_authentication_error(exc):
+                auth_error = ZAIAuthenticationError(f"ZAI authentication failed: {exc}")
+                logger.error("ZAI futures %s authentication failed: %s", context_label, exc, exc_info=True)
+                raise auth_error from exc
             if not _is_retryable_zai_error(exc) or attempt >= ZAI_GENERATE_MAX_RETRIES:
                 break
             sleep_seconds = min(8.0, 2.0 ** (attempt - 1))
@@ -640,9 +675,11 @@ __all__ = [
     "ZAI_DEFAULT_REASONING_EFFORT",
     "ZAI_DEFAULT_TIMEOUT_SECONDS",
     "ZAI_MAX_REASONING_EFFORT",
+    "ZAIAuthenticationError",
     "ZAIStructuredResponse",
     "TradeDirectionDecision",
     "estimate_zai_cost",
     "evaluate_entry_direction",
     "evaluate_trade_direction",
+    "is_zai_authentication_error",
 ]

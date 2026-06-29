@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional, Sequence
 
 from src.ai.zai_rebalancer import evaluate_active_rebalance_symbol
-from src.ai.zai_trader import evaluate_trade_direction
+from src.ai.zai_trader import evaluate_trade_direction, is_zai_authentication_error
 from src.binance.market_data import fetch_klines, parse_klines
 from src.binance.trade_position import (
     adjust_qty_for_symbol,
@@ -63,8 +63,26 @@ DB_DIR = os.path.join(ROOT_DIR, "db")
 MAX_DB_CYCLE_DIRS = 20
 STATE_VERSION = "1.0.0"
 SYMBOL_BANS_STATE_KEY = "symbol_bans"
+AI_CIRCUIT_BREAKER_STATE_KEY = "ai_circuit_breaker"
 SYMBOL_BAN_REASON_REGION_RESTRICTED = "binance_region_restricted"
+SYMBOL_BAN_REASON_STOP_LOSS_REJECTED = "binance_stop_loss_rejected"
 SYMBOL_BAN_SCOPE_ACTIVE_SCREENER = "active_screener"
+AI_AUTH_FAILURE_REASON = "zai_authentication_failed"
+AI_AUTH_FAILURE_BASE_COOLDOWN_MS = 15 * 60 * 1000
+AI_AUTH_FAILURE_MAX_COOLDOWN_MS = 6 * 60 * 60 * 1000
+STOP_LOSS_SYMBOL_BAN_ERROR_CODES = {-1102, -1111, -2021, -4014, -4164, -4411, -4412}
+STOP_LOSS_SYMBOL_BAN_MESSAGE_PATTERNS = (
+    "triggerprice",
+    "trigger price",
+    "stopprice",
+    "stop price",
+    "malformed",
+    "precision",
+    "tick size",
+    "would immediately trigger",
+    "not available in your region",
+    "tradfi-perps agreement",
+)
 MANAGED_DECISIONS = {"LONG", "SHORT"}
 ACTIVE_SCREENING_MODES = {"all", "crypto", "tradfi"}
 ACTIVE_SCREENING_MODE_ALIASES = {
@@ -355,6 +373,39 @@ def _symbol_ban_from_entry_order_error(
     }
 
 
+def _is_stop_loss_symbol_ban_error(code: Optional[int], message: Any) -> bool:
+    if is_permanent_symbol_restriction_error(code, message):
+        return True
+    text = str(message or "").strip().lower()
+    return code in STOP_LOSS_SYMBOL_BAN_ERROR_CODES and any(
+        pattern in text for pattern in STOP_LOSS_SYMBOL_BAN_MESSAGE_PATTERNS
+    )
+
+
+def _symbol_ban_from_stop_loss_error(
+    *,
+    symbol: str,
+    code: Optional[int],
+    message: Any,
+) -> Optional[Dict[str, Any]]:
+    normalized_symbol = _normalize_symbol(symbol)
+    if not normalized_symbol or not _is_stop_loss_symbol_ban_error(code, message):
+        return None
+    return {
+        "symbol": normalized_symbol,
+        "reason": (
+            SYMBOL_BAN_REASON_REGION_RESTRICTED
+            if is_permanent_symbol_restriction_error(code, message)
+            else SYMBOL_BAN_REASON_STOP_LOSS_REJECTED
+        ),
+        "source": "stop_loss_sync",
+        "scope": SYMBOL_BAN_SCOPE_ACTIVE_SCREENER,
+        "permanent": True,
+        "error_code": code,
+        "error_message": str(message or "").strip(),
+    }
+
+
 def _collect_symbol_bans(payload: Any) -> list[Dict[str, Any]]:
     if not isinstance(payload, dict):
         return []
@@ -364,7 +415,7 @@ def _collect_symbol_bans(payload: Any) -> list[Dict[str, Any]]:
         normalized = _normalize_symbol_ban_entry(symbol_ban.get("symbol"), symbol_ban)
         if normalized is not None:
             bans.append(normalized)
-    for child_key in ("execution", "close"):
+    for child_key in ("execution", "close", "stop_sync", "protection_verification", "direction_verification"):
         bans.extend(_collect_symbol_bans(payload.get(child_key)))
     return bans
 
@@ -406,6 +457,103 @@ def _record_symbol_bans_from_slot_result(
     for symbol_ban in _collect_symbol_bans(slot_result):
         updated_state = _record_symbol_ban(updated_state, symbol_ban, as_of_ms=as_of_ms)
     return updated_state
+
+
+def _normalize_ai_circuit_breaker(raw_entry: Any) -> Dict[str, Any]:
+    if not isinstance(raw_entry, dict):
+        return {}
+    reason = str(raw_entry.get("reason") or "").strip()
+    retry_after_at = str(raw_entry.get("retry_after_at") or "").strip()
+    if not reason or not retry_after_at:
+        return {}
+    entry: Dict[str, Any] = {
+        "reason": reason,
+        "retry_after_at": retry_after_at,
+        "event_count": max(1, _safe_int(raw_entry.get("event_count", 1), 1)),
+    }
+    for key in ("first_seen_at", "last_seen_at", "last_error"):
+        value = raw_entry.get(key)
+        if str(value or "").strip():
+            entry[key] = str(value).strip()
+    return entry
+
+
+def _ai_circuit_breaker_is_open(raw_entry: Any, *, as_of_ms: int) -> bool:
+    entry = _normalize_ai_circuit_breaker(raw_entry)
+    retry_after_ms = _parse_utc_iso_ms(entry.get("retry_after_at"))
+    return retry_after_ms is not None and retry_after_ms > _resolve_as_of_ms(as_of_ms)
+
+
+def _clear_expired_ai_circuit_breaker(
+    portfolio_state: Dict[str, Any],
+    *,
+    as_of_ms: int,
+) -> Dict[str, Any]:
+    entry = _normalize_ai_circuit_breaker(portfolio_state.get(AI_CIRCUIT_BREAKER_STATE_KEY))
+    if not entry or _ai_circuit_breaker_is_open(entry, as_of_ms=as_of_ms):
+        return portfolio_state
+    updated = dict(portfolio_state)
+    updated.pop(AI_CIRCUIT_BREAKER_STATE_KEY, None)
+    return updated
+
+
+def _ai_auth_failure_cooldown_ms(event_count: int) -> int:
+    attempts = max(1, int(event_count))
+    multiplier = 2 ** min(8, attempts - 1)
+    return min(AI_AUTH_FAILURE_MAX_COOLDOWN_MS, AI_AUTH_FAILURE_BASE_COOLDOWN_MS * multiplier)
+
+
+def _record_ai_auth_failure(
+    portfolio_state: Dict[str, Any],
+    *,
+    error_message: str,
+    as_of_ms: int,
+) -> Dict[str, Any]:
+    timestamp = _utc_iso_from_ms(as_of_ms)
+    existing = _normalize_ai_circuit_breaker(portfolio_state.get(AI_CIRCUIT_BREAKER_STATE_KEY))
+    event_count = max(0, _safe_int(existing.get("event_count", 0), 0)) + 1
+    retry_after_ms = _resolve_as_of_ms(as_of_ms) + _ai_auth_failure_cooldown_ms(event_count)
+    updated = dict(portfolio_state)
+    updated[AI_CIRCUIT_BREAKER_STATE_KEY] = {
+        "reason": AI_AUTH_FAILURE_REASON,
+        "first_seen_at": str(existing.get("first_seen_at") or timestamp),
+        "last_seen_at": timestamp,
+        "retry_after_at": _utc_iso_from_ms(retry_after_ms),
+        "event_count": event_count,
+        "last_error": str(error_message or "").strip()[:600],
+    }
+    return updated
+
+
+def _slot_result_ai_error_messages(slot_result: Dict[str, Any]) -> list[str]:
+    messages: list[str] = []
+    for key in ("error", "ai_error"):
+        value = slot_result.get(key)
+        if str(value or "").strip():
+            messages.append(str(value).strip())
+    for key in ("ai_analysis", "active_rebalance_analysis"):
+        analysis = slot_result.get(key)
+        if isinstance(analysis, dict):
+            value = analysis.get("error")
+            if str(value or "").strip():
+                messages.append(str(value).strip())
+    return messages
+
+
+def _record_ai_circuit_breaker_from_slot_result(
+    portfolio_state: Dict[str, Any],
+    slot_result: Dict[str, Any],
+    *,
+    as_of_ms: int,
+) -> Dict[str, Any]:
+    for message in _slot_result_ai_error_messages(slot_result):
+        if is_zai_authentication_error(message):
+            logger.error(
+                "Opening ZAI auth circuit breaker | %s",
+                format_log_details({"reason": AI_AUTH_FAILURE_REASON, "error": message[:240]}),
+            )
+            return _record_ai_auth_failure(portfolio_state, error_message=message, as_of_ms=as_of_ms)
+    return portfolio_state
 
 
 def _parse_utc_iso_ms(value: Any) -> Optional[int]:
@@ -772,6 +920,7 @@ def _normalize_portfolio_state(previous_state: Optional[Dict[str, Any]], slots: 
         "version": STATE_VERSION,
         "slots": normalized_slots,
         SYMBOL_BANS_STATE_KEY: _normalize_symbol_bans(raw.get(SYMBOL_BANS_STATE_KEY)),
+        AI_CIRCUIT_BREAKER_STATE_KEY: _normalize_ai_circuit_breaker(raw.get(AI_CIRCUIT_BREAKER_STATE_KEY)),
         "last_cycle_time": raw.get("last_cycle_time"),
         "last_minute_slot": raw.get("last_minute_slot"),
         "last_cycle_result": raw.get("last_cycle_result"),
@@ -1040,6 +1189,14 @@ def _sync_fixed_stop_loss(
     enriched = dict(sync_result)
     enriched["stop_loss_pct"] = float(stop_loss_pct)
     enriched.setdefault("stop_loss", stop_loss)
+    if not bool(enriched.get("success")):
+        symbol_ban = _symbol_ban_from_stop_loss_error(
+            symbol=symbol,
+            code=_normalize_optional_int(enriched.get("error_code")),
+            message=enriched.get("error_message") or enriched.get("reason"),
+        )
+        if symbol_ban is not None:
+            enriched["symbol_ban"] = symbol_ban
     return enriched
 
 
@@ -2088,6 +2245,7 @@ def _run_active_slot(
     notification_callback: NotificationCallback,
     recent_universe_symbols: Sequence[str] = (),
     runtime_banned_symbols: Sequence[str] = (),
+    ai_circuit_breaker: Optional[Dict[str, Any]] = None,
 ) -> tuple[Dict[str, Any], Dict[str, Any], Optional[str]]:
     state_symbol = _normalize_symbol(slot_state.get("symbol"))
     slot_universe_symbols = {
@@ -2119,6 +2277,7 @@ def _run_active_slot(
     result["target_notional_usdt"] = target_notional
     candidate: Optional[Dict[str, Any]] = None
     active_mode_changed = _active_screening_mode_changed(slot, slot_state)
+    ai_circuit_open = _ai_circuit_breaker_is_open(ai_circuit_breaker, as_of_ms=as_of_ms)
     if active_mode_changed:
         result["active_screening_mode_changed"] = True
         result["previous_active_screening_mode"] = slot_state.get("previous_active_screening_mode")
@@ -2196,6 +2355,25 @@ def _run_active_slot(
                 "trigger_price": trigger_info.get("trigger_price"),
             }
         )
+        if ai_circuit_open:
+            stop_sync = _sync_fixed_stop_loss(
+                api_key=api_key,
+                api_secret=api_secret,
+                symbol=current_symbol,
+                position=position,
+                stop_loss_pct=float(config["stop_loss_pct"]),
+            )
+            result["position"] = calculate_position_metrics(position)
+            result["stop_sync"] = stop_sync
+            result["success"] = bool(stop_sync.get("success"))
+            result["action"] = "ai_circuit_open_position_kept" if result["success"] else "stop_loss_sync_failed"
+            result["ai_circuit_breaker"] = dict(ai_circuit_breaker or {})
+            updated_state = _update_slot_ai_state(
+                tracked_state,
+                ai_triggered=False,
+                symbol=current_symbol,
+            )
+            return result, updated_state, current_symbol
         try:
             candidate = _screen_active_candidate(
                 slot=slot,
@@ -2674,6 +2852,11 @@ def _run_active_slot(
         return result, updated_state, reserved_symbol
 
     if candidate is None:
+        if ai_circuit_open:
+            result["success"] = True
+            result["action"] = "ai_circuit_open_waiting_for_api"
+            result["ai_circuit_breaker"] = dict(ai_circuit_breaker or {})
+            return result, slot_state, None
         try:
             candidate = _screen_active_candidate(
                 slot=slot,
@@ -2821,6 +3004,7 @@ def run_portfolio_cycle(
     slots = _build_portfolio_slots(config)
     resolved_as_of_ms = _resolve_as_of_ms(as_of_ms)
     portfolio_state = _normalize_portfolio_state(state, slots)
+    portfolio_state = _clear_expired_ai_circuit_breaker(portfolio_state, as_of_ms=resolved_as_of_ms)
     cycle_dir: Optional[str] = None
     result: Dict[str, Any] = {
         "version": STATE_VERSION,
@@ -2927,6 +3111,7 @@ def run_portfolio_cycle(
                         _active_screening_mode(slot),
                     ),
                     runtime_banned_symbols=_runtime_banned_symbols(portfolio_state),
+                    ai_circuit_breaker=portfolio_state.get(AI_CIRCUIT_BREAKER_STATE_KEY),
                 )
         except Exception as exc:
             logger.error(
@@ -2947,6 +3132,11 @@ def run_portfolio_cycle(
 
         result["slot_results"].append(slot_result)
         portfolio_state = _record_symbol_bans_from_slot_result(
+            portfolio_state,
+            slot_result,
+            as_of_ms=resolved_as_of_ms,
+        )
+        portfolio_state = _record_ai_circuit_breaker_from_slot_result(
             portfolio_state,
             slot_result,
             as_of_ms=resolved_as_of_ms,

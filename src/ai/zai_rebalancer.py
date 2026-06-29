@@ -33,6 +33,7 @@ from src.ai.zai_trader import (
     ZAI_DEFAULT_TIMEOUT_SECONDS,
     ZAI_DIRECTION_MODEL,
     ZAI_GENERATE_MAX_RETRIES,
+    ZAIAuthenticationError,
     DECISION_REASON_MAX_CHARS,
     ZAIEmptyContentError,
     ZAIStructuredResponse,
@@ -47,6 +48,7 @@ from src.ai.zai_trader import (
     _normalize_reasoning_effort,
     _normalize_timeout_seconds,
     estimate_zai_cost,
+    is_zai_authentication_error,
 )
 from src.infra.env_loader import get_zai_api_key
 from src.infra.logger import format_log_details, get_logger
@@ -359,6 +361,10 @@ def _call_zai_rebalance_selection(
             )
         except Exception as exc:
             last_error = exc
+            if is_zai_authentication_error(exc):
+                auth_error = ZAIAuthenticationError(f"ZAI authentication failed: {exc}")
+                logger.error("ZAI active rebalance authentication failed: %s", exc, exc_info=True)
+                raise auth_error from exc
             if not _is_retryable_zai_error(exc) or attempt >= ZAI_GENERATE_MAX_RETRIES:
                 break
             sleep_seconds = min(8.0, 2.0 ** (attempt - 1))

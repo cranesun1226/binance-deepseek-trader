@@ -154,6 +154,25 @@ class ZAITraderTests(unittest.TestCase):
         self.assertEqual(client.chat.completions.create.call_count, 2)
         mocked_sleep.assert_called_once()
 
+    def test_authentication_error_is_raised_without_retrying(self):
+        client = Mock()
+        client.chat.completions.create.side_effect = Exception(
+            'Error code: 401, with error text {"error":{"code":"1000","message":"Authentication Failed"}}'
+        )
+
+        with patch("src.ai.zai_trader.get_zai_api_key", return_value="key"), patch(
+            "src.ai.zai_trader.ZaiClient", return_value=client
+        ), patch("src.ai.zai_trader.time.sleep") as mocked_sleep, patch("src.ai.zai_trader.logger"):
+            with self.assertRaises(zai_trader.ZAIAuthenticationError):
+                zai_trader._call_zai_structured_decision(
+                    prompt="prompt",
+                    reasoning_effort="max",
+                    response_model=zai_trader.TradeDirectionDecision,
+                )
+
+        self.assertEqual(client.chat.completions.create.call_count, 1)
+        mocked_sleep.assert_not_called()
+
     def test_extra_decision_fields_are_retried_before_accepting_valid_json(self):
         extra_field_response = {
             "choices": [

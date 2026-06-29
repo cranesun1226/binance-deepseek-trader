@@ -240,6 +240,37 @@ class PortfolioFlowTests(unittest.TestCase):
         mocked_close.assert_called_once()
         self.assertEqual(mocked_close.call_args.kwargs["context"], "post_trade_stop_loss_sync_failed")
 
+    def test_open_ai_circuit_skips_empty_slot_screening_and_ai(self):
+        slot = _active_slot("active_4", "all")
+        breaker = {
+            "reason": "zai_authentication_failed",
+            "retry_after_at": "1970-01-01T00:20:00Z",
+            "event_count": 1,
+        }
+
+        with patch("src.strategy.portfolio_strategy._screen_active_candidate") as mocked_screen:
+            result, updated_state, reserved_symbol = portfolio_strategy._run_active_slot(
+                slot=slot,
+                slot_state={"slot_id": "active_4", "kind": "active", "symbol": None},
+                config=_config(),
+                api_key="key",
+                api_secret="secret",
+                account_overview={"equity": 1000.0, "available_balance": 500.0},
+                open_positions=[],
+                reserved_symbols=set(),
+                as_of_ms=1000,
+                cycle_dir_factory=lambda: "/tmp/unused-cycle-dir",
+                notification_callback=None,
+                ai_circuit_breaker=breaker,
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["action"], "ai_circuit_open_waiting_for_api")
+        self.assertEqual(result["ai_circuit_breaker"], breaker)
+        self.assertIsNone(reserved_symbol)
+        self.assertIsNone(updated_state["symbol"])
+        mocked_screen.assert_not_called()
+
     def test_non_ai_cycle_does_not_create_db_artifact(self):
         slot = _active_slot()
         slot_state = {"slot_id": "active_1", "kind": "active", "symbol": "ESUSDT"}

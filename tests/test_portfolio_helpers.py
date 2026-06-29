@@ -379,6 +379,53 @@ class PortfolioHelperTests(unittest.TestCase):
         self.assertEqual(ban["last_seen_at"], "1970-01-01T00:00:02Z")
         self.assertEqual(ban["error_code"], -4412)
 
+    def test_stop_loss_malformed_trigger_records_symbol_ban(self):
+        with patch(
+            "src.strategy.portfolio_strategy.sync_existing_position_stop_loss",
+            return_value={
+                "success": False,
+                "changed": False,
+                "reason": "place_stop_loss_failed",
+                "error_code": -1102,
+                "error_message": "Mandatory parameter 'triggerprice' was not sent, was empty/null, or malformed.",
+            },
+        ):
+            result = portfolio_strategy._sync_fixed_stop_loss(
+                api_key="key",
+                api_secret="secret",
+                symbol="SPELLUSDT",
+                position={
+                    "symbol": "SPELLUSDT",
+                    "positionAmt": "-1000",
+                    "side": "Sell",
+                    "entryPrice": "0.000095",
+                    "markPrice": "0.000094",
+                },
+                stop_loss_pct=0.05,
+            )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["symbol_ban"]["symbol"], "SPELLUSDT")
+        self.assertEqual(result["symbol_ban"]["reason"], "binance_stop_loss_rejected")
+        self.assertEqual(result["symbol_ban"]["source"], "stop_loss_sync")
+
+    def test_ai_auth_failure_opens_circuit_breaker_with_backoff(self):
+        updated = portfolio_strategy._record_ai_circuit_breaker_from_slot_result(
+            {"version": portfolio_strategy.STATE_VERSION, "slots": {}},
+            {
+                "slot_id": "active_4",
+                "error": 'ZAI authentication failed: Error code: 401 {"error":{"code":"1000","message":"Authentication Failed"}}',
+            },
+            as_of_ms=1000,
+        )
+
+        breaker = updated["ai_circuit_breaker"]
+        self.assertEqual(breaker["reason"], "zai_authentication_failed")
+        self.assertEqual(breaker["event_count"], 1)
+        self.assertEqual(breaker["retry_after_at"], "1970-01-01T00:15:01Z")
+        self.assertTrue(portfolio_strategy._ai_circuit_breaker_is_open(breaker, as_of_ms=2000))
+        self.assertFalse(portfolio_strategy._ai_circuit_breaker_is_open(breaker, as_of_ms=901001))
+
     def test_active_screening_mode_change_is_detected_from_persisted_state(self):
         slots = portfolio_strategy._build_portfolio_slots({})
         state = portfolio_strategy._normalize_portfolio_state(

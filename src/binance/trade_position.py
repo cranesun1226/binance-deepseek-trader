@@ -75,6 +75,10 @@ def decimal_to_str(value: Decimal) -> str:
     return text or "0"
 
 
+def _decimal_text(value: Any) -> str:
+    return decimal_to_str(safe_decimal(str(value)))
+
+
 def is_permanent_symbol_restriction_error(code: Optional[int], message: Any) -> bool:
     """Return True when an exchange error means this symbol should not be retried."""
     if code in PERMANENT_SYMBOL_RESTRICTION_ERROR_CODES:
@@ -1259,6 +1263,7 @@ def sync_existing_position_stop_loss(
     adjusted_stop = adjust_price_for_symbol(normalized_symbol, float(stop_loss), rounding=rounding)
     if adjusted_stop is None:
         return {"success": False, "changed": False, "reason": "invalid_stop_loss"}
+    adjusted_stop_text = _decimal_text(adjusted_stop)
 
     if current_stop_loss is not None:
         existing_stop = adjust_price_for_symbol(normalized_symbol, float(current_stop_loss), rounding=rounding)
@@ -1307,7 +1312,7 @@ def sync_existing_position_stop_loss(
             ("symbol", normalized_symbol),
             ("side", exit_side),
             ("type", "STOP_MARKET"),
-            ("triggerPrice", adjusted_stop),
+            ("triggerPrice", adjusted_stop_text),
             ("closePosition", "true"),
             ("workingType", "CONTRACT_PRICE"),
             ("priceProtect", "TRUE"),

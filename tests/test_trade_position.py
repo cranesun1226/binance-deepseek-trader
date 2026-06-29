@@ -171,6 +171,27 @@ class TradePositionTests(unittest.TestCase):
         self.assertEqual(result["order"]["algoStatus"], "NEW")
         self.assertEqual(params["clientAlgoId"], observed_query["client_algo_id"])
 
+    def test_stop_loss_trigger_price_uses_plain_decimal_for_low_priced_symbols(self):
+        with patch("src.binance.trade_position.adjust_price_for_symbol", return_value=0.0000995), patch(
+            "src.binance.trade_position._cancel_stop_orders",
+            return_value=True,
+        ), patch(
+            "src.binance.trade_position._signed_post_expect_key",
+            return_value=({"algoId": 789, "clientAlgoId": "client-id", "algoStatus": "NEW"}, None, ""),
+        ) as signed_post, patch("src.binance.trade_position.logger"):
+            result = trade_position.sync_existing_position_stop_loss(
+                "api-key",
+                "api-secret",
+                "SPELLUSDT",
+                "Sell",
+                stop_loss=0.0000995,
+            )
+
+        params = dict(signed_post.call_args.kwargs["params"])
+        self.assertTrue(result["success"])
+        self.assertEqual(params["triggerPrice"], "0.0000995")
+        self.assertNotIn("e", params["triggerPrice"].lower())
+
     def test_unknown_execution_reconciliation_ignores_ineffective_order_status(self):
         with patch("src.binance.trade_position.time.sleep"), patch("src.binance.trade_position.logger"):
             reconciled = trade_position._reconcile_unknown_execution(

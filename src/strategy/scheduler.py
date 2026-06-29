@@ -71,6 +71,8 @@ ACTION_LABELS = {
     "post_trade_stop_loss_sync_failed_close_failed": "Stop-loss sync failed, close failed",
     "active_rank_switch_entry_failed": "Active ZAI switch entry failed",
     "reference_price_unavailable": "Reference price unavailable",
+    "ai_circuit_open_position_kept": "ZAI auth paused, position kept",
+    "ai_circuit_open_waiting_for_api": "ZAI auth paused, waiting for API recovery",
 }
 
 
