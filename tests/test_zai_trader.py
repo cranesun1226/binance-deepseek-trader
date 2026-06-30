@@ -55,7 +55,7 @@ class ZAITraderTests(unittest.TestCase):
         self.assertEqual(
             payload["messages"][0]["content"],
             "You are a world-class USDT perpetual futures crypto trader. "
-            "Analyze with a trend-following market consensus view, favoring the LONG or SHORT direction that a clear supermajority of reasonable momentum traders would broadly agree has the higher expected value. "
+            "Use your own trader judgment and the supplied market data to choose the LONG or SHORT direction that appears more likely to produce future profit. "
             "Use only English to reason and respond. "
             "Return exactly one json object containing only the decision and reason. "
             "The reason must be english, reasonable, data-based, and 300 characters or fewer.",
@@ -285,11 +285,15 @@ class ZAITraderTests(unittest.TestCase):
             prompt,
             'You are a world-class BTCUSDT trader.\n'
             'Return JSON only with exactly two fields: decision and reason.\n'
-            'Analyze with a trend-following market consensus view, favoring the LONG or SHORT direction that a clear supermajority of reasonable trend-following traders would broadly agree has the higher expected value.\n'
+            'Use your own trader judgment and the supplied market data to choose the LONG or SHORT position that appears more likely to produce future profit.\n'
             'The reason must be english, reasonable, data-based, and 300 characters or fewer.\n'
             'Examples: {"decision":"LONG","reason":"..."} or {"decision":"SHORT","reason":"..."}.\n'
             'Market payload:\n{"symbol":"BTCUSDT","reference_price":100.0,"timeframes":{"1h":[98.0,99.0,100.0]}}',
         )
+        lowered_prompt = prompt.lower()
+        self.assertNotIn("trend-following", lowered_prompt)
+        self.assertNotIn("momentum", lowered_prompt)
+        self.assertNotIn("consensus", lowered_prompt)
 
     def test_cost_estimate_returns_none_when_glm_5_2_pricing_is_unconfigured(self):
         estimate = zai_trader.estimate_zai_cost(

@@ -58,10 +58,10 @@ logger = get_logger("zai_rebalancer")
 REBALANCE_REASON_MAX_CHARS = DECISION_REASON_MAX_CHARS
 
 _SYSTEM_PROMPT = (
-    "You are a USDT perpetual futures trend-following momentum portfolio selector. "
+    "You are a USDT perpetual futures portfolio rebalancer. "
     "Two symbol candidates have equal priority. "
     "Ignore order, symbol familiarity, and wording as selection signals. "
-    "Select the symbol with stronger data-backed trend-following momentum consensus and higher expected value. "
+    "Use your own trader judgment and the supplied market data to select the symbol that appears more likely to produce future profit. "
     "In the reason, compare both candidates directly and explain why the selected symbol is more rational. "
     "Use only English. "
     "Return exactly one JSON object containing only selected_symbol and reason. "
@@ -157,9 +157,9 @@ def _build_rebalance_input_payload(
 
     normalized_candidates.sort(key=lambda row: row["symbol"])
     return {
-        "task": "select_one_symbol_from_equal_priority_momentum_candidates",
+        "task": "select_one_symbol_from_equal_priority_candidates",
         "selection_basis": (
-            "Choose the candidate with stronger trend-following momentum agreement "
+            "Choose the candidate that appears more likely to produce future profit "
             f"from the same {normalized_count}-close market evidence."
         ),
         "ai_prompt_timeframe": normalized_timeframe,
@@ -173,7 +173,7 @@ def _format_rebalance_prompt(payload: Dict[str, Any]) -> str:
     return (
         "Return JSON only with exactly two fields: selected_symbol and reason.\n"
         "Choose one allowed symbol; candidates are equal priority, so ignore order, familiarity, and wording.\n"
-        "Select the symbol with stronger trend-following momentum evidence and expected value.\n"
+        "Use your own trader judgment and the supplied market data to select the symbol that appears more likely to produce future profit.\n"
         f"Reason: English, data-based, compare both candidates directly, explain why the selected symbol is more rational, {REBALANCE_REASON_MAX_CHARS} characters or fewer.\n"
         f"Allowed selected_symbol values: {json.dumps(symbols, ensure_ascii=False, separators=(',', ':'))}.\n"
         "Example: {\"selected_symbol\":\"SYMBOLUSDT\",\"reason\":\"...\"}.\n"

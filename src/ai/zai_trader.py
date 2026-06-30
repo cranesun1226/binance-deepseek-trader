@@ -57,7 +57,7 @@ _ZAI_MODEL_PRICING_USD_PER_MILLION: dict[str, dict[str, float]] = {}
 
 _SYSTEM_PROMPT = (
     "You are a world-class USDT perpetual futures crypto trader. "
-    "Analyze with a trend-following market consensus view, favoring the LONG or SHORT direction that a clear supermajority of reasonable momentum traders would broadly agree has the higher expected value. "
+    "Use your own trader judgment and the supplied market data to choose the LONG or SHORT direction that appears more likely to produce future profit. "
     "Use only English to reason and respond. "
     "Return exactly one json object containing only the decision and reason. "
     f"The reason must be english, reasonable, data-based, and {DECISION_REASON_MAX_CHARS} characters or fewer."
@@ -203,7 +203,7 @@ def _format_direction_prompt(payload: Dict[str, Any]) -> str:
     return (
         f"You are a world-class {symbol} trader.\n"
         "Return JSON only with exactly two fields: decision and reason.\n"
-        "Analyze with a trend-following market consensus view, favoring the LONG or SHORT direction that a clear supermajority of reasonable trend-following traders would broadly agree has the higher expected value.\n"
+        "Use your own trader judgment and the supplied market data to choose the LONG or SHORT position that appears more likely to produce future profit.\n"
         f"The reason must be english, reasonable, data-based, and {DECISION_REASON_MAX_CHARS} characters or fewer.\n"
         "Examples: {\"decision\":\"LONG\",\"reason\":\"...\"} or {\"decision\":\"SHORT\",\"reason\":\"...\"}.\n"
         f"Market payload:\n{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"
