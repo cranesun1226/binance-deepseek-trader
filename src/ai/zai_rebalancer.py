@@ -61,7 +61,7 @@ _SYSTEM_PROMPT = (
     "You are a USDT perpetual futures portfolio rebalancer. "
     "Two symbol candidates have equal priority. "
     "Ignore order, symbol familiarity, and wording as selection signals. "
-    "Use your own trader judgment and the supplied market data to select the symbol that appears more likely to produce future profit. "
+    "Use your own momentum trader judgment and the supplied market data to select the symbol that appears more likely to produce future profit. "
     "In the reason, compare both candidates directly and explain why the selected symbol is more rational. "
     "Use only English. "
     "Return exactly one JSON object containing only selected_symbol and reason. "
@@ -173,7 +173,7 @@ def _format_rebalance_prompt(payload: Dict[str, Any]) -> str:
     return (
         "Return JSON only with exactly two fields: selected_symbol and reason.\n"
         "Choose one allowed symbol; candidates are equal priority, so ignore order, familiarity, and wording.\n"
-        "Use your own trader judgment and the supplied market data to select the symbol that appears more likely to produce future profit.\n"
+        "Use your own momentum trader judgment and the supplied market data to select the symbol that appears more likely to produce future profit.\n"
         f"Reason: English, data-based, compare both candidates directly, explain why the selected symbol is more rational, {REBALANCE_REASON_MAX_CHARS} characters or fewer.\n"
         f"Allowed selected_symbol values: {json.dumps(symbols, ensure_ascii=False, separators=(',', ':'))}.\n"
         "Example: {\"selected_symbol\":\"SYMBOLUSDT\",\"reason\":\"...\"}.\n"

@@ -15,8 +15,8 @@ zai_max_tokens: 8192
 zai_timeout_seconds: 300.0
 
 # Portfolio allocation
-# Four active slots each target 1/4 margin allocation. Active 1/2/3 screen
-# TradFi USDT-M perpetuals; active 4 screens the full USDT-M perpetual
+# Two active slots each target 1/2 margin allocation. Active 1 screens
+# TradFi USDT-M perpetuals; active 2 screens the full USDT-M perpetual
 # universe, including TradFi and non-TradFi crypto symbols.
 active_leverage: 1
 capital_usage_ratio: 0.99

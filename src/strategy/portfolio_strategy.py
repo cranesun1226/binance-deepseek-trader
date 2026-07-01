@@ -1,4 +1,4 @@
-"""Four-slot Binance futures portfolio runtime powered by ZAI."""
+"""Two-slot Binance futures portfolio runtime powered by ZAI."""
 
 from __future__ import annotations
 
@@ -94,11 +94,9 @@ ACTIVE_SCREENING_MODE_ALIASES = {
 }
 ACTIVE_SLOT_SPECS = (
     ("active_1", "active1", "tradfi"),
-    ("active_2", "active2", "tradfi"),
-    ("active_3", "active3", "tradfi"),
-    ("active_4", "active4", "all"),
+    ("active_2", "active2", "all"),
 )
-PORTFOLIO_SLOT_TARGET_MARGIN_RATIO = 0.25
+PORTFOLIO_SLOT_TARGET_MARGIN_RATIO = 0.5
 MATERIAL_POSITION_RECORD_ACTIONS = {
     "active_rebalance_review_failed_position_kept",
     "active_rebalance_position_kept",
@@ -2999,7 +2997,7 @@ def run_portfolio_cycle(
     as_of_ms: Optional[int] = None,
     notification_callback: NotificationCallback = None,
 ) -> Dict[str, Any]:
-    """Run one full four-slot portfolio cycle and return a serializable result payload."""
+    """Run one full two-slot portfolio cycle and return a serializable result payload."""
     config = _load_strategy_config()
     slots = _build_portfolio_slots(config)
     resolved_as_of_ms = _resolve_as_of_ms(as_of_ms)

@@ -4,10 +4,9 @@ Binance USDT-M futures portfolio runner powered by a trend-quality active screen
 
 ## Strategy
 
-- Four active slots, each targeting 25% margin allocation.
-- Active 1, 2, and 3 screen TradFi USDT-M perpetual symbols.
-- Active 4 screens the full USDT-M perpetual universe, including TradFi and non-TradFi crypto symbols.
-- This keeps three dedicated TradFi slots while allowing the fourth slot to select the strongest overall USDT setup.
+- Two active slots, each targeting 50% margin allocation.
+- Active 1 screens TradFi USDT-M perpetual symbols.
+- Active 2 screens the full USDT-M perpetual universe, including TradFi and non-TradFi crypto symbols.
 - All active slots use 1x leverage by default and a fixed 5% stop loss from entry.
 - ZAI is called only when an active slot has no open position or when the configured active re-screen interval is due, default 18 hours.
 
@@ -129,7 +128,7 @@ src/
     telegram.py
   strategy/
     active_screener.py       # trend-quality active market screening
-    portfolio_strategy.py    # four-active-slot runtime
+    portfolio_strategy.py    # two-active-slot runtime
     scheduler.py
 ```
 

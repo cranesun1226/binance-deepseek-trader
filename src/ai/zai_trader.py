@@ -56,8 +56,8 @@ _CJK_PATTERN = re.compile(r"[\u4e00-\u9fff]")
 _ZAI_MODEL_PRICING_USD_PER_MILLION: dict[str, dict[str, float]] = {}
 
 _SYSTEM_PROMPT = (
-    "You are a world-class USDT perpetual futures crypto trader. "
-    "Use your own trader judgment and the supplied market data to choose the LONG or SHORT direction that appears more likely to produce future profit. "
+    "You are a world-class USDT perpetual futures crypto momentum trader. "
+    "Use your own momentum trader judgment and the supplied market data to choose the LONG or SHORT direction that appears more likely to produce future profit. "
     "Use only English to reason and respond. "
     "Return exactly one json object containing only the decision and reason. "
     f"The reason must be english, reasonable, data-based, and {DECISION_REASON_MAX_CHARS} characters or fewer."
@@ -201,9 +201,9 @@ def _build_direction_input_payload(
 def _format_direction_prompt(payload: Dict[str, Any]) -> str:
     symbol = str(payload.get("symbol") or "the supplied symbol").strip().upper() or "the supplied symbol"
     return (
-        f"You are a world-class {symbol} trader.\n"
+        f"You are a world-class {symbol} momentum trader.\n"
         "Return JSON only with exactly two fields: decision and reason.\n"
-        "Use your own trader judgment and the supplied market data to choose the LONG or SHORT position that appears more likely to produce future profit.\n"
+        "Use your own momentum trader judgment and the supplied market data to choose the LONG or SHORT position that appears more likely to produce future profit.\n"
         f"The reason must be english, reasonable, data-based, and {DECISION_REASON_MAX_CHARS} characters or fewer.\n"
         "Examples: {\"decision\":\"LONG\",\"reason\":\"...\"} or {\"decision\":\"SHORT\",\"reason\":\"...\"}.\n"
         f"Market payload:\n{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}"

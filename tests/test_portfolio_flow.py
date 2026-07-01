@@ -34,7 +34,7 @@ def _active_slot(slot_id="active_1", screening_mode="tradfi"):
         slot_id=slot_id,
         label=slot_id.replace("_", ""),
         kind="active",
-        target_margin_ratio=0.25,
+        target_margin_ratio=0.5,
         active_screening_mode=screening_mode,
     )
 
@@ -110,7 +110,7 @@ class PortfolioFlowTests(unittest.TestCase):
             },
         ) as mocked_crypto, patch("src.strategy.portfolio_strategy.screen_active_tradfi_symbol") as mocked_tradfi:
             candidate = portfolio_strategy._screen_active_candidate(
-                slot=_active_slot("active_4", "crypto"),
+                slot=_active_slot("active_2", "crypto"),
                 config=_config(),
                 excluded_symbols=["ESUSDT"],
             )
@@ -136,7 +136,7 @@ class PortfolioFlowTests(unittest.TestCase):
             "src.strategy.portfolio_strategy.screen_active_tradfi_symbol"
         ) as mocked_tradfi:
             candidate = portfolio_strategy._screen_active_candidate(
-                slot=_active_slot("active_4", "all"),
+                slot=_active_slot("active_2", "all"),
                 config=_config(),
                 excluded_symbols=["ESUSDT"],
             )
@@ -241,7 +241,7 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertEqual(mocked_close.call_args.kwargs["context"], "post_trade_stop_loss_sync_failed")
 
     def test_open_ai_circuit_skips_empty_slot_screening_and_ai(self):
-        slot = _active_slot("active_4", "all")
+        slot = _active_slot("active_2", "all")
         breaker = {
             "reason": "zai_authentication_failed",
             "retry_after_at": "1970-01-01T00:20:00Z",
@@ -251,7 +251,7 @@ class PortfolioFlowTests(unittest.TestCase):
         with patch("src.strategy.portfolio_strategy._screen_active_candidate") as mocked_screen:
             result, updated_state, reserved_symbol = portfolio_strategy._run_active_slot(
                 slot=slot,
-                slot_state={"slot_id": "active_4", "kind": "active", "symbol": None},
+                slot_state={"slot_id": "active_2", "kind": "active", "symbol": None},
                 config=_config(),
                 api_key="key",
                 api_secret="secret",
@@ -437,7 +437,7 @@ class PortfolioFlowTests(unittest.TestCase):
         self.assertEqual(seen_bans, [()])
         self.assertIn("SKHYNIXUSDT", portfolio_strategy._runtime_banned_symbols(result["state_update"]))
 
-    def test_four_active_slots_reserve_distinct_symbols_in_one_cycle(self):
+    def test_two_active_slots_reserve_distinct_symbols_in_one_cycle(self):
         slots = portfolio_strategy._build_portfolio_slots({})
         screen_exclusions = []
 
@@ -446,8 +446,6 @@ class PortfolioFlowTests(unittest.TestCase):
             symbols = {
                 "active_1": "ESUSDT",
                 "active_2": "NQUSDT",
-                "active_3": "GCUSDT",
-                "active_4": "BTCUSDT",
             }
             return {
                 "symbol": symbols[kwargs["slot"].slot_id],
@@ -499,13 +497,11 @@ class PortfolioFlowTests(unittest.TestCase):
             )
 
         self.assertTrue(result["success"])
-        self.assertEqual([row["slot_id"] for row in result["slot_results"]], ["active_1", "active_2", "active_3", "active_4"])
-        self.assertEqual([row["symbol"] for row in result["slot_results"]], ["ESUSDT", "NQUSDT", "GCUSDT", "BTCUSDT"])
+        self.assertEqual([row["slot_id"] for row in result["slot_results"]], ["active_1", "active_2"])
+        self.assertEqual([row["symbol"] for row in result["slot_results"]], ["ESUSDT", "NQUSDT"])
         self.assertNotIn("ESUSDT", screen_exclusions[0][2])
         self.assertIn("ESUSDT", screen_exclusions[1][2])
-        self.assertIn("NQUSDT", screen_exclusions[2][2])
-        self.assertIn("GCUSDT", screen_exclusions[3][2])
-        self.assertEqual(screen_exclusions[3][1], "all")
+        self.assertEqual(screen_exclusions[1][1], "all")
 
     def test_slot_exception_is_captured_and_following_slots_continue(self):
         active1 = _active_slot("active_1")

@@ -5,13 +5,13 @@ from src.strategy import portfolio_strategy
 
 
 class PortfolioHelperTests(unittest.TestCase):
-    def test_default_config_builds_four_active_slots_in_priority_order(self):
+    def test_default_config_builds_two_active_slots_in_priority_order(self):
         slots = portfolio_strategy._build_portfolio_slots({})
 
-        self.assertEqual([slot.slot_id for slot in slots], ["active_1", "active_2", "active_3", "active_4"])
-        self.assertEqual([slot.kind for slot in slots], ["active"] * 4)
-        self.assertEqual([slot.target_margin_ratio for slot in slots], [0.25] * 4)
-        self.assertEqual([slot.active_screening_mode for slot in slots], ["tradfi", "tradfi", "tradfi", "all"])
+        self.assertEqual([slot.slot_id for slot in slots], ["active_1", "active_2"])
+        self.assertEqual([slot.kind for slot in slots], ["active"] * 2)
+        self.assertEqual([slot.target_margin_ratio for slot in slots], [0.5] * 2)
+        self.assertEqual([slot.active_screening_mode for slot in slots], ["tradfi", "all"])
 
     def test_zai_reasoning_effort_normalization_matches_api_values(self):
         self.assertEqual(portfolio_strategy._normalize_reasoning_effort("xhigh"), "max")
@@ -24,7 +24,7 @@ class PortfolioHelperTests(unittest.TestCase):
             slot_id="active_1",
             label="active1",
             kind="active",
-            target_margin_ratio=0.25,
+            target_margin_ratio=0.5,
         )
 
         target = portfolio_strategy._target_notional_usdt(
@@ -34,14 +34,14 @@ class PortfolioHelperTests(unittest.TestCase):
             leverage=2,
         )
 
-        self.assertEqual(target, 495.0)
+        self.assertEqual(target, 990.0)
 
     def test_slot_leverage_defaults_active_to_1x(self):
         active = portfolio_strategy.PortfolioSlot(
             slot_id="active_1",
             label="active1",
             kind="active",
-            target_margin_ratio=0.25,
+            target_margin_ratio=0.5,
         )
 
         self.assertEqual(portfolio_strategy._leverage_for_slot(active, {}), 1)
@@ -116,7 +116,7 @@ class PortfolioHelperTests(unittest.TestCase):
             slot_id="active_1",
             label="active1",
             kind="active",
-            target_margin_ratio=0.25,
+            target_margin_ratio=0.5,
         )
 
         state = portfolio_strategy._normalize_slot_state(
@@ -295,8 +295,10 @@ class PortfolioHelperTests(unittest.TestCase):
 
         self.assertEqual(state["slots"]["active_1"]["symbol"], "ESUSDT")
         self.assertEqual(state["slots"]["active_2"]["symbol"], None)
-        self.assertEqual(set(state["slots"]), {"active_1", "active_2", "active_3", "active_4"})
+        self.assertEqual(set(state["slots"]), {"active_1", "active_2"})
         self.assertNotIn("retired_slot", state["slots"])
+        self.assertNotIn("active_3", state["slots"])
+        self.assertNotIn("active_4", state["slots"])
 
     def test_active_recent_symbols_are_grouped_by_screening_universe(self):
         slots = portfolio_strategy._build_portfolio_slots({})
@@ -315,15 +317,15 @@ class PortfolioHelperTests(unittest.TestCase):
 
         grouped = portfolio_strategy._active_recent_symbols_by_mode(slots, state)
 
-        self.assertEqual(grouped["tradfi"], {"ESUSDT", "NQUSDT", "GCUSDT", "YMUSDT", "XAUUSDT"})
-        self.assertEqual(grouped["all"], {"BTCUSDT", "ETHUSDT"})
+        self.assertEqual(grouped["tradfi"], {"ESUSDT", "NQUSDT"})
+        self.assertEqual(grouped["all"], {"GCUSDT", "YMUSDT"})
         self.assertEqual(
             portfolio_strategy._recent_symbols_for_screening_mode(grouped, "all"),
-            {"ESUSDT", "NQUSDT", "GCUSDT", "YMUSDT", "XAUUSDT", "BTCUSDT", "ETHUSDT"},
+            {"ESUSDT", "NQUSDT", "GCUSDT", "YMUSDT"},
         )
         self.assertEqual(
             portfolio_strategy._recent_symbols_for_screening_mode(grouped, "tradfi"),
-            {"ESUSDT", "NQUSDT", "GCUSDT", "YMUSDT", "XAUUSDT", "BTCUSDT", "ETHUSDT"},
+            {"ESUSDT", "NQUSDT", "GCUSDT", "YMUSDT"},
         )
 
     def test_runtime_symbol_bans_are_normalized_and_excluded_from_active_screening(self):
@@ -413,7 +415,7 @@ class PortfolioHelperTests(unittest.TestCase):
         updated = portfolio_strategy._record_ai_circuit_breaker_from_slot_result(
             {"version": portfolio_strategy.STATE_VERSION, "slots": {}},
             {
-                "slot_id": "active_4",
+                "slot_id": "active_2",
                 "error": 'ZAI authentication failed: Error code: 401 {"error":{"code":"1000","message":"Authentication Failed"}}',
             },
             as_of_ms=1000,
@@ -432,7 +434,7 @@ class PortfolioHelperTests(unittest.TestCase):
             {
                 "version": portfolio_strategy.STATE_VERSION,
                 "slots": {
-                    "active_4": {
+                    "active_2": {
                         "symbol": "BTCUSDT",
                         "active_screening_mode": "crypto",
                         "last_ai_decision": "LONG",
@@ -442,10 +444,10 @@ class PortfolioHelperTests(unittest.TestCase):
             slots,
         )
 
-        active4_state = state["slots"]["active_4"]
-        self.assertEqual(active4_state["active_screening_mode"], "all")
-        self.assertTrue(active4_state["active_screening_mode_changed"])
-        self.assertEqual(active4_state["previous_active_screening_mode"], "crypto")
+        active2_state = state["slots"]["active_2"]
+        self.assertEqual(active2_state["active_screening_mode"], "all")
+        self.assertTrue(active2_state["active_screening_mode_changed"])
+        self.assertEqual(active2_state["previous_active_screening_mode"], "crypto")
 
 
 if __name__ == "__main__":

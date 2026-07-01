@@ -62,7 +62,7 @@ def main_scheduled() -> None:
 
 def main() -> None:
     """Parse CLI arguments and dispatch the requested runtime mode."""
-    parser = argparse.ArgumentParser(description="Binance ZAI Trader | four-slot USDT-M futures bot")
+    parser = argparse.ArgumentParser(description="Binance ZAI Trader | two-slot USDT-M futures bot")
     parser.add_argument(
         "--once",
         action="store_true",
